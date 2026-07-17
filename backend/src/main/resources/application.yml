@@ -1,0 +1,46 @@
+server:
+  port: ${SERVER_PORT:9527}
+spring:
+  config:
+    import:
+      - optional:file:./.env[.properties]
+      - optional:file:./backend/.env[.properties]
+  application:
+    name: kb-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+kb:
+  storage-root: ${KB_STORAGE_ROOT:./runtime}
+  qdrant:
+    url: ${KB_QDRANT_URL:}
+    api-key: ${KB_QDRANT_API_KEY:}
+    host: ${KB_QDRANT_HOST:localhost}
+    port: ${KB_QDRANT_PORT:6333}
+    collection: ${KB_QDRANT_COLLECTION:npcbase_bge_m3}
+  chat:
+    enabled: ${KB_CHAT_ENABLED:false}
+    base-url: ${KB_CHAT_BASE_URL:}
+    api-key: ${KB_CHAT_API_KEY:}
+    model: ${KB_CHAT_MODEL:}
+  embedding:
+    enabled: ${KB_EMBEDDING_ENABLED:false}
+    base-url: ${KB_EMBEDDING_BASE_URL:}
+    api-key: ${KB_EMBEDDING_API_KEY:}
+    model: ${KB_EMBEDDING_MODEL:}
+    batch-size: ${KB_EMBEDDING_BATCH_SIZE:16}
+    rerank-enabled: ${KB_RERANK_ENABLED:false}
+    rerank-model: ${KB_RERANK_MODEL:}
+    rerank-top-n: ${KB_RERANK_TOP_N:3}

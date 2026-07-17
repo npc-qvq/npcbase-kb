@@ -1,0 +1,120 @@
+/* 保留博客的纸张感，以克制的米白、墨绿和暖灰构建知识库的阅读氛围。 */
+:root { --bg: #f6f2e9; --panel: #fffdf9; --panel-soft: rgba(255, 253, 249, .76); --line: #ded6c7; --ink: #27231e; --muted: #746b5f; --accent: #246f69; --accent-dark: #195650; --assistant: #f5f1e9; --danger: #a7473b; --shadow: 0 14px 36px rgba(67, 53, 37, .055); }
+* { box-sizing: border-box; }
+body { margin: 0; background: linear-gradient(90deg, rgba(201, 190, 172, .16) 1px, transparent 1px), linear-gradient(180deg, rgba(201, 190, 172, .13) 1px, transparent 1px), var(--bg); background-size: 52px 52px; color: var(--ink); font: 14px/1.6 Inter, "Microsoft YaHei", sans-serif; }
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+/* 外层固定为浏览器高度，三个区域各自滚动，避免聊天输入框离开视野。 */
+.app-shell { display: grid; grid-template-columns: 280px minmax(420px, 1fr) 330px; height: 100vh; overflow: hidden; }
+/* 左侧区域用于创建对话、编写提示词和显示小C启动状态。 */
+.left-sidebar { display: flex; flex-direction: column; gap: 23px; padding: 24px 18px; border-right: 1px solid rgba(199, 187, 168, .7); background: var(--panel-soft); backdrop-filter: blur(10px); }
+.brand { display: flex; align-items: center; gap: 10px; color: inherit; text-decoration: none; }
+.brand-mark, .avatar { display: grid; place-items: center; border-radius: 50%; font-weight: 800; }
+.brand-mark { width: 36px; height: 36px; background: var(--ink); box-shadow: 4px 4px 0 #e5ddce; color: #fff; }
+.brand strong, .brand small { display: block; }
+.brand small, .chat-header small { color: var(--muted); font-size: 10px; letter-spacing: .08em; }
+.new-chat { width: 100%; padding: 11px 13px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 253, 249, .9); color: var(--ink); text-align: left; transition: border-color .2s, transform .2s, box-shadow .2s; }
+.new-chat:hover { border-color: var(--accent); box-shadow: 0 5px 15px rgba(36, 111, 105, .09); transform: translateY(-1px); }
+.conversation-history { display: grid; gap: 6px; min-height: 0; overflow-y: auto; }
+.side-title { margin: 0; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .09em; }
+.history-row { display: grid; grid-template-columns: minmax(0, 1fr) 24px; align-items: center; border-radius: 7px; }
+.history-row:hover { background: rgba(229, 221, 206, .48); }
+.history-row.active { background: rgba(232, 238, 233, .78); color: var(--accent-dark); }
+.history-item { overflow: hidden; padding: 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; font-size: 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.history-row.active .history-item { font-weight: 700; }
+.history-item span { display: inline-grid; width: 18px; height: 18px; margin-right: 6px; place-items: center; border-radius: 50%; background: #e8eee9; color: var(--accent); font-size: 10px; font-weight: 800; }
+.history-delete { display: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 17px; line-height: 1; }
+.history-row:hover .history-delete { display: block; }
+.history-delete:hover { background: #f2dfdb; color: var(--danger); }
+label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+input, textarea { width: 100%; border: 1px solid var(--line); border-radius: 8px; outline: none; background: rgba(255, 254, 251, .88); color: var(--ink); }
+input { min-height: 38px; padding: 8px 10px; }
+textarea { padding: 10px; resize: none; }
+textarea:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(31,118,111,.1); }
+.hint { margin: 0; color: var(--muted); font-size: 12px; }
+.sidebar-footer { margin-top: auto; color: var(--muted); font-size: 12px; }
+.status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #b0b1b4; }
+.status-dot.active { background: #20a68f; }
+/* 中间区域承载完整聊天记录和固定在底部的提问框。 */
+.chat-main { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto auto; background: rgba(255, 253, 249, .58); }
+.chat-header { display: flex; align-items: center; justify-content: space-between; padding: 19px 30px; border-bottom: 1px solid rgba(222, 214, 199, .72); background: rgba(255, 253, 249, .52); }
+.chat-header strong, .chat-header small { display: block; }
+.chat-header > span { padding: 4px 9px; border: 1px solid #cee1dc; border-radius: 99px; background: #f0f7f5; color: var(--accent); font-size: 11px; }
+.message-list { min-height: 0; overflow-y: scroll; overscroll-behavior: contain; padding: 30px max(34px, 9%); scrollbar-color: #b9a98f rgba(238, 233, 224, .72); scrollbar-gutter: stable; scrollbar-width: thin; }
+/* 为 Chromium 浏览器定制可见的暖灰进度条，便于长回答上下阅读。 */
+.message-list::-webkit-scrollbar { width: 10px; }
+.message-list::-webkit-scrollbar-track { border-left: 1px solid rgba(222, 214, 199, .75); background: rgba(238, 233, 224, .72); }
+.message-list::-webkit-scrollbar-thumb { border: 3px solid rgba(238, 233, 224, .72); border-radius: 99px; background: #b9a98f; }
+.message-list::-webkit-scrollbar-thumb:hover { background: #927e62; }
+.message { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; margin-bottom: 24px; }
+.message.user { grid-template-columns: minmax(0, 1fr) 30px; }
+.message.user .avatar { grid-column: 2; background: #dcece9; color: var(--accent); }
+.message.user .message-body { grid-column: 1; grid-row: 1; justify-self: end; border: 1px solid #d5e6e2; background: #edf6f3; }
+.avatar { width: 30px; height: 30px; background: var(--ink); box-shadow: 2px 2px 0 #e5ddce; color: #fff; font-size: 12px; }
+.message.system .avatar { background: #f3e7da; color: #9b5a25; }
+.message-body { max-width: min(760px, 92%); padding: 13px 16px; border: 1px solid rgba(222, 214, 199, .78); border-radius: 13px; background: var(--assistant); box-shadow: 0 5px 16px rgba(67, 53, 37, .035); white-space: pre-wrap; }
+.message-body p { margin: 0; }
+.typing { color: var(--muted); }
+.citation { margin-top: 10px; border-top: 1px solid #ddd; color: var(--muted); font-size: 12px; }
+.citation summary { padding-top: 8px; cursor: pointer; color: var(--accent); }
+.citation p { margin: 7px 0 0; white-space: pre-wrap; }
+/* 接口失败时使用居中弹窗，避免错误文本挤压或遮挡聊天输入区域。 */
+.error-modal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(54, 43, 30, .26); backdrop-filter: blur(3px); }
+.error-modal { width: min(390px, 100%); padding: 29px; border: 1px solid #dfc9c2; border-radius: 14px; background: var(--panel); box-shadow: 0 22px 60px rgba(54, 43, 30, .2); text-align: center; }
+.error-modal-icon { display: grid; width: 34px; height: 34px; margin: 0 auto 13px; place-items: center; border-radius: 50%; background: #f5e3df; color: var(--danger); font-weight: 800; }
+.error-modal h2 { margin: 0; font-size: 19px; }
+.error-modal p { margin: 10px 0 21px; color: var(--muted); line-height: 1.7; white-space: pre-wrap; }
+.error-modal button { min-width: 110px; padding: 8px 15px; border: 0; border-radius: 7px; background: var(--accent); color: #fff; }
+.error-modal button:hover { background: var(--accent-dark); }
+/* 删除操作使用带明确影响说明的自定义确认弹窗，替代浏览器原生确认框。 */
+.delete-modal-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(42, 45, 43, .28); backdrop-filter: blur(5px); }
+.delete-modal { width: min(430px, 100%); padding: 25px 28px; border: 1px solid #e2c9c0; border-radius: 18px; background: var(--panel); box-shadow: 0 26px 72px rgba(47, 35, 25, .26); }
+.delete-modal-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.delete-modal-close { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 50%; background: #f8e9e5; color: var(--danger); font-size: 23px; line-height: 1; }
+.delete-modal-close:hover:not(:disabled) { background: #f2d8d1; }
+.delete-modal-eyebrow { margin: 0 0 3px; color: var(--danger); font-size: 11px; font-weight: 800; letter-spacing: .1em; }
+.delete-modal h2 { margin: 0; font-size: 21px; }
+.delete-modal-name { overflow: hidden; margin: 9px 0; color: var(--ink); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.delete-modal-copy { margin: 0; color: var(--muted); line-height: 1.7; }
+.delete-modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 25px; }
+.delete-modal-actions button { min-width: 94px; padding: 9px 14px; border-radius: 8px; }
+.delete-modal-cancel { border: 1px solid var(--line); background: transparent; color: var(--ink); }
+.delete-modal-cancel:hover:not(:disabled) { border-color: #b4aa99; background: #f5f1e9; }
+.delete-modal-confirm { border: 1px solid var(--danger); background: var(--danger); color: #fff; }
+.delete-modal-confirm:hover:not(:disabled) { background: #88372f; }
+.composer { margin: 0 auto 25px; width: min(860px, 84%); padding: 11px; border: 1px solid #d8d0c1; border-radius: 14px; box-shadow: 0 10px 28px rgba(54, 43, 30, .09); background: rgba(255, 254, 251, .95); }
+.composer textarea { min-height: 52px; border: 0; box-shadow: none; }
+.composer button { float: right; padding: 7px 12px; border: 0; border-radius: 7px; background: var(--accent); color: #fff; transition: background .2s, transform .2s; }
+.composer button:hover:not(:disabled), .upload-button:hover:not(:disabled) { background: var(--accent-dark); transform: translateY(-1px); }
+.composer small { display: block; clear: both; color: var(--muted); font-size: 10px; }
+/* 右侧区域集中处理资料上传和归档管理，不干扰对话流程。 */
+.archive-sidebar { overflow-y: auto; padding: 24px 18px; border-left: 1px solid rgba(199, 187, 168, .7); background: var(--panel-soft); backdrop-filter: blur(10px); }
+.archive-sidebar header { display: flex; align-items: center; justify-content: space-between; }
+.archive-sidebar header strong { display: block; margin-top: 3px; font-size: 17px; }
+.icon-button, .delete-button { border: 0; background: transparent; color: var(--muted); }
+.icon-button { font-size: 20px; }
+.upload-box { display: grid; gap: 11px; margin: 20px 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 253, 249, .9); box-shadow: var(--shadow); }
+.file-input { position: relative; min-height: 72px; padding: 10px; border: 1px dashed #c9bda8; border-radius: 8px; background: #fffefa; }
+.file-input input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.file-input b, .file-input small { display: block; }
+.file-input b { color: var(--accent); }
+.file-input small { margin-top: 5px; }
+.upload-button { min-height: 37px; border: 0; border-radius: 7px; background: var(--accent); color: #fff; transition: background .2s, transform .2s; }
+.archive-message { margin: 0; color: var(--accent); font-size: 12px; }
+.archive-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.archive-list li { display: grid; grid-template-columns: 35px minmax(0, 1fr) auto; gap: 9px; padding: 13px 0; border-top: 1px solid var(--line); }
+.file-badge { display: grid; width: 35px; height: 35px; place-items: center; border-radius: 7px; background: #e6efed; color: var(--accent); font-size: 9px; font-weight: 800; }
+.archive-list strong, .archive-list small, .archive-list em { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-list small { color: var(--muted); font-size: 11px; }
+.archive-list em { color: #a36b2c; font-size: 10px; font-style: normal; }
+.archive-list em.indexed { color: var(--accent); }
+.archive-actions { display: flex; align-items: start; gap: 2px; }
+.reindex-button, .delete-button { border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; padding: 3px; }
+.reindex-button:hover { color: var(--accent); }
+.delete-button:hover { color: var(--danger); }
+.failure { color: var(--danger) !important; }
+.empty-archive { display: block !important; color: var(--muted); }
+/* 窄屏时按阅读优先级折叠侧栏，保证提问与回答保持可用。 */
+@media (max-width: 1050px) { .app-shell { grid-template-columns: 230px minmax(360px, 1fr); } .archive-sidebar { display: none; } }
+@media (max-width: 700px) { .app-shell { display: block; height: auto; overflow: visible; } .left-sidebar { display: none; } .chat-main { min-height: 100vh; } .message-list { min-height: 65vh; padding: 18px; } .composer { width: calc(100% - 28px); } }

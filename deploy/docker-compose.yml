@@ -1,0 +1,12 @@
+services:
+  kb-service:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file:
+      - ../backend/.env
+    ports:
+      - "127.0.0.1:9527:9527"
+    volumes:
+      - /opt/npcbase-kb/runtime:/data/npcbase/data/kb
+    restart: unless-stopped

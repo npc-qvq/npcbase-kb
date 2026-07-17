@@ -1,0 +1,14 @@
+.idea/
+.vscode/
+*.iml
+target/
+node_modules/
+dist/
+.env
+.env.local
+*.log
+*.pid
+*.jar
+*.tsbuildinfo
+runtime/
+data/
