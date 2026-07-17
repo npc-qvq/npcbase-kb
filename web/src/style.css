@@ -37,16 +37,30 @@ textarea:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #b0b1b4; }
 .status-dot.active { background: #20a68f; }
 /* 中间区域承载完整聊天记录和固定在底部的提问框。 */
-.chat-main { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto auto; background: rgba(255, 253, 249, .58); }
+.chat-main { position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto auto; background: rgba(255, 253, 249, .58); }
 .chat-header { display: flex; align-items: center; justify-content: space-between; padding: 19px 30px; border-bottom: 1px solid rgba(222, 214, 199, .72); background: rgba(255, 253, 249, .52); }
 .chat-header strong, .chat-header small { display: block; }
 .chat-header > span { padding: 4px 9px; border: 1px solid #cee1dc; border-radius: 99px; background: #f0f7f5; color: var(--accent); font-size: 11px; }
-.message-list { min-height: 0; overflow-y: scroll; overscroll-behavior: contain; padding: 30px max(34px, 9%); scrollbar-color: #b9a98f rgba(238, 233, 224, .72); scrollbar-gutter: stable; scrollbar-width: thin; }
+.message-list { min-height: 0; overflow-y: scroll; overscroll-behavior: contain; padding: 30px max(34px, 9%) 54px; scrollbar-color: #b9a98f rgba(238, 233, 224, .72); scrollbar-gutter: stable; scrollbar-width: thin; }
 /* 为 Chromium 浏览器定制可见的暖灰进度条，便于长回答上下阅读。 */
 .message-list::-webkit-scrollbar { width: 10px; }
 .message-list::-webkit-scrollbar-track { border-left: 1px solid rgba(222, 214, 199, .75); background: rgba(238, 233, 224, .72); }
 .message-list::-webkit-scrollbar-thumb { border: 3px solid rgba(238, 233, 224, .72); border-radius: 99px; background: #b9a98f; }
 .message-list::-webkit-scrollbar-thumb:hover { background: #927e62; }
+/* 会话导航默认是一列提问位置小点；浮窗以当前悬停或点击的小点为锚点向左展开。 */
+.conversation-navigator { position: absolute; z-index: 5; top: 86px; right: 18px; bottom: 126px; width: 12px; }
+.navigator-dots { display: flex; height: 100%; align-items: center; flex-direction: column; justify-content: space-around; gap: 4px; }
+.navigator-dot { width: 7px; height: 7px; flex: 0 0 auto; padding: 0; border: 0; border-radius: 50%; background: #c4bbae; box-shadow: 0 0 0 2px rgba(255, 253, 249, .72); transition: background .15s ease, transform .15s ease; }
+.navigator-dot:hover, .navigator-dot.active { background: var(--accent); transform: scale(1.35); }
+.navigator-preview { position: absolute; right: 20px; display: grid; width: min(280px, 30vw); max-height: min(510px, calc(100% - 24px)); padding: 11px; gap: 3px; overflow-y: auto; border: 1px solid rgba(214, 204, 188, .78); border-radius: 14px; background: rgba(255, 253, 249, .97); box-shadow: 0 12px 28px rgba(67, 53, 37, .16); scrollbar-color: #b8afa0 transparent; scrollbar-width: thin; transform: translateY(-50%); }
+.navigator-preview::-webkit-scrollbar { width: 8px; }
+.navigator-preview::-webkit-scrollbar-track { margin: 10px 0; border-radius: 99px; background: transparent; }
+.navigator-preview::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 99px; background: #b8afa0; background-clip: content-box; }
+.navigator-preview::-webkit-scrollbar-thumb:hover { background-color: var(--accent); }
+.navigator-preview::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+.navigator-preview-item { overflow: hidden; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font-size: 13px; line-height: 1.4; text-align: left; text-overflow: ellipsis; white-space: nowrap; transition: background .15s ease, color .15s ease; }
+.navigator-preview-item:hover { background: rgba(229, 221, 206, .6); }
+.navigator-preview-item.active { background: rgba(232, 238, 233, .9); color: var(--accent-dark); font-weight: 700; }
 .message { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; margin-bottom: 24px; }
 .message.user { grid-template-columns: minmax(0, 1fr) 30px; }
 .message.user .avatar { grid-column: 2; background: #dcece9; color: var(--accent); }
@@ -83,7 +97,7 @@ textarea:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .delete-modal-cancel:hover:not(:disabled) { border-color: #b4aa99; background: #f5f1e9; }
 .delete-modal-confirm { border: 1px solid var(--danger); background: var(--danger); color: #fff; }
 .delete-modal-confirm:hover:not(:disabled) { background: #88372f; }
-.composer { margin: 0 auto 25px; width: min(860px, 84%); padding: 11px; border: 1px solid #d8d0c1; border-radius: 14px; box-shadow: 0 10px 28px rgba(54, 43, 30, .09); background: rgba(255, 254, 251, .95); }
+.composer { position: relative; z-index: 2; margin: 0 auto 25px; width: min(860px, 84%); padding: 11px; border: 1px solid #d8d0c1; border-radius: 14px; box-shadow: 0 10px 28px rgba(54, 43, 30, .09); background: rgba(255, 254, 251, .95); }
 .composer textarea { min-height: 52px; border: 0; box-shadow: none; }
 .composer button { float: right; padding: 7px 12px; border: 0; border-radius: 7px; background: var(--accent); color: #fff; transition: background .2s, transform .2s; }
 .composer button:hover:not(:disabled), .upload-button:hover:not(:disabled) { background: var(--accent-dark); transform: translateY(-1px); }
@@ -117,4 +131,4 @@ textarea:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .empty-archive { display: block !important; color: var(--muted); }
 /* 窄屏时按阅读优先级折叠侧栏，保证提问与回答保持可用。 */
 @media (max-width: 1050px) { .app-shell { grid-template-columns: 230px minmax(360px, 1fr); } .archive-sidebar { display: none; } }
-@media (max-width: 700px) { .app-shell { display: block; height: auto; overflow: visible; } .left-sidebar { display: none; } .chat-main { min-height: 100vh; } .message-list { min-height: 65vh; padding: 18px; } .composer { width: calc(100% - 28px); } }
+@media (max-width: 700px) { .app-shell { display: block; height: auto; overflow: visible; } .left-sidebar { display: none; } .chat-main { min-height: 100vh; } .message-list { min-height: 65vh; padding: 18px; } .conversation-navigator { display: none; } .composer { width: calc(100% - 28px); } }

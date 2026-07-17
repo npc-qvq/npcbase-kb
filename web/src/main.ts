@@ -102,8 +102,55 @@ const App = {
     /** 右侧上传区展示的操作结果提示。 */
     const archiveMessage = ref('')
 
-    /** 保存消息列表元素，用于每次追加消息后滚动到底部。 */
+    /** 保存消息列表元素，用于每次追加消息后滚动到底部或定位回答。 */
     const messageList = ref<HTMLElement | null>(null)
+
+    /** 用户是否仍停留在消息区底部附近；手动上翻历史消息后不会强制拉回最新回答。 */
+    const shouldAutoFollowLatest = ref(true)
+
+    /** 鼠标悬停或点击会话导航点后，是否展开用户提问前缀列表。 */
+    const conversationNavigatorExpanded = ref(false)
+
+    /** 用户点击某条提问后锁定导航浮层，避免鼠标离开时立即消失。 */
+    const conversationNavigatorPinned = ref(false)
+
+    /** 会话导航容器元素，用于以被点击圆点为锚点定位浮窗。 */
+    const conversationNavigator = ref<HTMLElement | null>(null)
+
+    /** 会话导航浮窗元素，用于避免浮窗在顶部或底部超出可视区域。 */
+    const navigatorPreview = ref<HTMLElement | null>(null)
+
+    /** 浮窗相对于右侧导航栏顶部的纵向锚点位置。 */
+    const navigatorAnchorTop = ref(0)
+
+    /** 鼠标从圆点移动到浮窗期间使用的延迟关闭计时器。 */
+    let navigatorCloseTimer: number | undefined
+
+    /** 当前阅读位置对应的最近一条用户提问，用于在导航列表中高亮。 */
+    const activePromptId = ref('')
+
+    /** 已渲染消息元素的引用，用于点击缩略块后准确跳转到对应消息。 */
+    const messageElements = new Map<string, HTMLElement>()
+
+    /** 当前会话中的用户提问列表；右侧导航只展示提问，不展示小C完整回答。 */
+    const userMessages = computed(() => messages.value.filter(message => message.role === 'user'))
+
+    /**
+     * 将后端处理状态转换为资料列表中更容易理解的中文说明。
+     *
+     * @param status 文档在后端保存的处理状态码
+     * @returns 面向用户展示的处理进度文案
+     */
+    function documentStatusText(status: string) {
+      const textMap: Record<string, string> = {
+        UPLOADED: '资料已上传，等待开始处理',
+        PARSING: '正在读取并整理文档内容',
+        INDEXING: '正在创建向量索引',
+        INDEXED: '向量已生成，可以提问',
+        FAILED: '处理失败，请查看原因'
+      }
+      return textMap[status] || '正在处理中'
+    }
 
     /**
      * 调用后端接口并返回原始响应，接口未使用登录或令牌校验。
@@ -205,7 +252,7 @@ const App = {
     async function reindexDocument(id: string) {
       const response = await request(`/api/documents/${id}/reindex`, { method: 'POST' })
       archiveMessage.value = response.ok
-        ? '已加入向量化队列，稍后刷新可查看 INDEXED 状态。'
+        ? '已加入处理队列，稍后刷新查看处理进度。'
         : await errorOf(response, '重新向量化失败')
       if (response.ok) {
         await refreshDocuments()
@@ -317,13 +364,207 @@ const App = {
     }
 
     /**
-     * 将消息列表滚动到最新内容，确保回答完成后可立即查看。
+     * 判断消息区是否仍停留在底部附近，用于避免打断用户阅读历史消息。
+     *
+     * @returns 是否适合自动跟随最新消息
+     */
+    function isNearMessageListBottom() {
+      const list = messageList.value
+      if (!list) {
+        return true
+      }
+      return list.scrollHeight - list.scrollTop - list.clientHeight < 88
+    }
+
+    /**
+     * 处理消息区滚动，同时记录用户是否主动上翻查看历史消息。
+     */
+    function handleMessageListScroll() {
+      shouldAutoFollowLatest.value = isNearMessageListBottom()
+      updateActivePrompt()
+    }
+
+    /**
+     * 将消息列表滚动到最新内容，确保新出现的“正在思考”不会被底部输入框挡住。
      */
     async function scrollToLatestMessage() {
       await nextTick()
       if (messageList.value) {
+        shouldAutoFollowLatest.value = true
         messageList.value.scrollTop = messageList.value.scrollHeight
+        updateActivePrompt()
       }
+    }
+
+    /**
+     * 将一条新回答的开头对齐到消息区可读位置，避免长回答直接跳到结尾。
+     *
+     * @param messageId 需要展示开头的回答消息主键
+     */
+    async function scrollToAnswerStart(messageId: string) {
+      await nextTick()
+      const target = messageElements.get(messageId)
+      const list = messageList.value
+      if (!target || !list) {
+        return
+      }
+      const targetTop = target.offsetTop - list.offsetTop - 18
+      list.scrollTo({ top: Math.max(targetTop, 0), behavior: 'smooth' })
+      window.setTimeout(updateActivePrompt, 350)
+    }
+
+    /**
+     * 根据会话内容区的实际滚动位置，更新右侧提问导航中当前高亮的提问。
+     */
+    function updateActivePrompt() {
+      if (!messageList.value) {
+        return
+      }
+      const readingLine = messageList.value.scrollTop + messageList.value.clientHeight * 0.3
+      let currentId = userMessages.value[0]?.id || ''
+      for (const message of userMessages.value) {
+        const element = messageElements.get(message.id)
+        if (element && element.offsetTop - messageList.value.offsetTop <= readingLine) {
+          currentId = message.id
+        }
+      }
+      activePromptId.value = currentId
+    }
+
+    /**
+     * 保存或移除每条消息对应的页面元素，供会话缩略导航跳转使用。
+     *
+     * @param messageId 消息主键
+     * @param element Vue 渲染后提供的元素引用
+     */
+    function registerMessageElement(messageId: string, element: unknown) {
+      if (element instanceof HTMLElement) {
+        messageElements.set(messageId, element)
+        return
+      }
+      messageElements.delete(messageId)
+    }
+
+    /** 清除右侧会话导航的延迟关闭计时器。 */
+    function clearNavigatorCloseTimer() {
+      if (navigatorCloseTimer !== undefined) {
+        window.clearTimeout(navigatorCloseTimer)
+        navigatorCloseTimer = undefined
+      }
+    }
+
+    /**
+     * 将浮窗限制在会话导航可见区域内；正常情况下与点击的圆点居中对齐。
+     */
+    function clampNavigatorPreviewPosition() {
+      const navigator = conversationNavigator.value
+      const preview = navigatorPreview.value
+      if (!navigator || !preview) {
+        return
+      }
+      const padding = 12
+      const minTop = preview.offsetHeight / 2 + padding
+      const maxTop = navigator.clientHeight - preview.offsetHeight / 2 - padding
+      navigatorAnchorTop.value = minTop > maxTop
+        ? navigator.clientHeight / 2
+        : Math.min(Math.max(navigatorAnchorTop.value, minTop), maxTop)
+    }
+
+    /**
+     * 根据鼠标所在圆点确定浮窗位置，并在渲染后校正上下边界。
+     *
+     * @param event 圆点触发的鼠标事件
+     */
+    function positionNavigatorPreview(event: MouseEvent) {
+      const navigator = conversationNavigator.value
+      const target = event.currentTarget
+      if (!navigator || !(target instanceof HTMLElement)) {
+        return
+      }
+      const navigatorRect = navigator.getBoundingClientRect()
+      const dotRect = target.getBoundingClientRect()
+      navigatorAnchorTop.value = dotRect.top - navigatorRect.top + dotRect.height / 2
+      void nextTick(() => window.requestAnimationFrame(clampNavigatorPreviewPosition))
+    }
+
+    /**
+     * 鼠标进入圆点或浮窗时保持浮窗显示，确保可顺畅移入左侧浮窗操作。
+     */
+    function keepConversationNavigatorOpen() {
+      clearNavigatorCloseTimer()
+      conversationNavigatorExpanded.value = true
+    }
+
+    /**
+     * 鼠标临时悬停圆点时，在该圆点旁显示预览；离开后未锁定的预览会收起。
+     *
+     * @param event 圆点触发的鼠标事件
+     */
+    function previewNavigatorAtDot(event: MouseEvent) {
+      keepConversationNavigatorOpen()
+      positionNavigatorPreview(event)
+    }
+
+    /**
+     * 鼠标离开圆点或浮窗时延迟收起，给鼠标跨越两者之间的空隙留出时间。
+     */
+    function scheduleConversationNavigatorClose() {
+      clearNavigatorCloseTimer()
+      navigatorCloseTimer = window.setTimeout(() => {
+        if (!conversationNavigatorPinned.value) {
+          conversationNavigatorExpanded.value = false
+        }
+      }, 180)
+    }
+
+    /**
+     * 在中间会话区域继续阅读时解除导航浮层锁定，恢复鼠标悬停才展示的交互。
+     */
+    function releaseConversationNavigator() {
+      clearNavigatorCloseTimer()
+      conversationNavigatorPinned.value = false
+      conversationNavigatorExpanded.value = false
+    }
+
+    /**
+     * 滚动到用户在会话缩略预览中选中的一条消息。
+     *
+     * @param messageId 目标消息主键
+     */
+    function scrollToMessage(messageId: string) {
+      const target = messageElements.get(messageId)
+      if (!target || !messageList.value) {
+        return
+      }
+      const targetTop = target.offsetTop - messageList.value.offsetTop - 20
+      messageList.value.scrollTo({ top: Math.max(targetTop, 0), behavior: 'smooth' })
+      window.setTimeout(updateActivePrompt, 350)
+    }
+
+    /**
+     * 点击右侧圆点或提问前缀后定位到目标消息，并锁定导航浮层供用户继续查看。
+     *
+     * @param messageId 目标用户提问的消息主键
+     * @param event 点击圆点时用于计算浮窗锚点的鼠标事件；点击浮窗条目时无需更新锚点
+     */
+    function selectPromptFromNavigator(messageId: string, event?: MouseEvent) {
+      clearNavigatorCloseTimer()
+      conversationNavigatorPinned.value = true
+      conversationNavigatorExpanded.value = true
+      if (event?.currentTarget instanceof HTMLElement && event.currentTarget.classList.contains('navigator-dot')) {
+        positionNavigatorPreview(event)
+      }
+      scrollToMessage(messageId)
+    }
+
+    /**
+     * 将用户提问压缩成单行前缀，供右侧会话导航浮层展示。
+     *
+     * @param content 用户提问原文
+     * @returns 去除换行和多余空白后的单行提问
+     */
+    function questionPreview(content: string) {
+      return content.replace(/\s+/g, ' ').trim()
     }
 
     /**
@@ -349,6 +590,8 @@ const App = {
       messages.value.push(pendingMessage)
       await scrollToLatestMessage()
       asking.value = true
+      // “正在思考”消息刚插入后再次滚动，确保它完整显示在底部输入框上方。
+      await scrollToLatestMessage()
       try {
         // 后端保存用户输入，未启动时使用本地资料模式，启动后调用 DeepSeek。
         const response = await request(`/api/conversations/${conversationId}/messages`, {
@@ -369,7 +612,10 @@ const App = {
         }
         npcStarted.value = Boolean(body.conversation.npcStarted)
         conversations.value = [body.conversation, ...conversations.value.filter(item => item.id !== body.conversation.id)]
-        await scrollToLatestMessage()
+        const latestAssistantMessage = [...body.messages].reverse().find((message: ChatMessage) => message.role === 'assistant')
+        if (shouldAutoFollowLatest.value && latestAssistantMessage) {
+          await scrollToAnswerStart(latestAssistantMessage.id)
+        }
       } catch {
         chatError.value = '网络请求失败，提问已保留，请稍后重试。'
       } finally {
@@ -404,6 +650,7 @@ const App = {
       currentConversationId,
       currentConversationTitle,
       deleteConversation,
+      documentStatusText,
       documents,
       file,
       messageList,
@@ -412,15 +659,32 @@ const App = {
       pendingDelete,
       question,
       refreshDocuments,
+      handleMessageListScroll,
       reindexDocument,
+      registerMessageElement,
       removeDocument,
       send,
       selectConversation,
+      scrollToMessage,
       startNewChat,
       title,
+      questionPreview,
+      activePromptId,
+      conversationNavigatorPinned,
+      conversationNavigatorExpanded,
+      conversationNavigator,
+      navigatorPreview,
+      navigatorAnchorTop,
+      keepConversationNavigatorOpen,
+      previewNavigatorAtDot,
+      scheduleConversationNavigatorClose,
+      releaseConversationNavigator,
+      selectPromptFromNavigator,
+      updateActivePrompt,
       upload,
       uploading,
-      deleting
+      deleting,
+      userMessages
     }
   },
   template: `
@@ -443,8 +707,8 @@ const App = {
 
       <main class="chat-main">
         <header class="chat-header"><div><strong>{{ currentConversationTitle }}</strong><small>小C · {{ npcStarted ? 'DeepSeek 增强回答' : '本地资料模式' }}</small></div><span>{{ npcStarted ? 'DeepSeek 已启用' : '本地资料模式' }}</span></header>
-        <section ref="messageList" class="message-list">
-          <article v-for="message in messages" :key="message.id" class="message" :class="message.role">
+        <section ref="messageList" class="message-list" @click="releaseConversationNavigator" @scroll="handleMessageListScroll">
+          <article v-for="message in messages" :key="message.id" :ref="element => registerMessageElement(message.id, element)" class="message" :class="message.role">
             <div class="avatar">{{ message.role === 'assistant' ? 'C' : message.role === 'user' ? '我' : '!' }}</div>
             <div class="message-body"><p>{{ message.content }}</p>
               <details v-for="citation in message.citations" :key="citation.documentId + citation.chunkNo" class="citation"><summary>{{ citation.documentTitle }} · 切片 {{ citation.chunkNo }}</summary><p>{{ citation.excerpt }}</p></details>
@@ -452,13 +716,21 @@ const App = {
           </article>
           <article v-if="asking" class="message assistant"><div class="avatar">C</div><div class="message-body typing">小C 正在阅读资料并思考…</div></article>
         </section>
+        <nav v-if="userMessages.length" ref="conversationNavigator" class="conversation-navigator" :class="{ expanded: conversationNavigatorExpanded, pinned: conversationNavigatorPinned }" aria-label="会话提问导航" @click.stop @mouseleave="scheduleConversationNavigatorClose">
+          <div class="navigator-dots" aria-label="提问位置">
+            <button v-for="message in userMessages" :key="'dot-' + message.id" class="navigator-dot" :class="{ active: message.id === activePromptId }" :title="questionPreview(message.content)" @mouseenter="previewNavigatorAtDot($event)" @click="selectPromptFromNavigator(message.id, $event)"></button>
+          </div>
+          <div v-if="conversationNavigatorExpanded" ref="navigatorPreview" class="navigator-preview" :style="{ top: navigatorAnchorTop + 'px' }" aria-label="本次会话的提问列表" @mouseenter="keepConversationNavigatorOpen" @mouseleave="scheduleConversationNavigatorClose">
+            <button v-for="message in userMessages" :key="'preview-' + message.id" class="navigator-preview-item" :class="{ active: message.id === activePromptId }" @click="selectPromptFromNavigator(message.id)">{{ questionPreview(message.content) }}</button>
+          </div>
+        </nav>
         <div class="composer"><textarea v-model="question" @keydown.enter.exact.prevent="send" :placeholder="composerPlaceholder"></textarea><button :disabled="asking || !question.trim()" @click="send">发送 ↑</button><small>{{ composerHint }}</small></div>
       </main>
 
       <aside class="archive-sidebar">
         <header><div><p class="side-title">资料归档</p><strong>{{ documents.length }} 份资料</strong></div><button class="icon-button" @click="refreshDocuments">↻</button></header>
         <section class="upload-box"><label><span>资料标题（可选）</span><input v-model="title" placeholder="给资料取个名称"></label><label class="file-input"><input type="file" accept=".md,.markdown,.txt,.pdf,.docx" @change="chooseFile"><b>{{ file ? file.name : '＋ 选择资料文件' }}</b><small>支持 Markdown、TXT、PDF、Word</small></label><button class="upload-button" :disabled="!file || uploading" @click="upload">{{ uploading ? '正在归档…' : '上传并解析' }}</button><p v-if="archiveMessage" class="archive-message">{{ archiveMessage }}</p></section>
-        <ul class="archive-list"><li v-for="doc in documents" :key="doc.id"><span class="file-badge">{{ doc.fileType.toUpperCase() }}</span><div><strong>{{ doc.title }}</strong><small>{{ doc.originalFilename }}</small><em :class="doc.status.toLowerCase()">{{ doc.status }}</em><small v-if="doc.failureReason" class="failure">{{ doc.failureReason }}</small></div><div class="archive-actions"><button class="reindex-button" title="重新生成 BGE-M3 向量" @click="reindexDocument(doc.id)">↻</button><button class="delete-button" title="删除资料" @click="removeDocument(doc.id)">×</button></div></li><li v-if="!documents.length" class="empty-archive">还没有资料，先上传一份文件吧。</li></ul>
+        <ul class="archive-list"><li v-for="doc in documents" :key="doc.id"><span class="file-badge">{{ doc.fileType.toUpperCase() }}</span><div><strong>{{ doc.title }}</strong><small>原始文件：{{ doc.originalFilename }}</small><em :class="doc.status.toLowerCase()">{{ documentStatusText(doc.status) }}</em><small v-if="doc.failureReason" class="failure">{{ doc.failureReason }}</small></div><div class="archive-actions"><button class="reindex-button" title="重新生成 BGE-M3 向量" @click="reindexDocument(doc.id)">↻</button><button class="delete-button" title="删除资料" @click="removeDocument(doc.id)">×</button></div></li><li v-if="!documents.length" class="empty-archive">还没有资料，先上传一份文件吧。</li></ul>
       </aside>
       <div v-if="chatError" class="error-modal-backdrop" @click.self="closeChatError">
         <section class="error-modal" role="alertdialog" aria-modal="true" aria-labelledby="error-modal-title">
