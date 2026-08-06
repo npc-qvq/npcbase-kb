@@ -24,7 +24,7 @@ public class KbProperties {
     private QdrantProperties qdrant = new QdrantProperties();
 
     /**
-     * 小C启动后用于 DeepSeek 回答的对话模型配置。
+     * 小C启动后用于对话回答的多提供商大模型配置。
      */
     private ChatProperties chat = new ChatProperties();
 

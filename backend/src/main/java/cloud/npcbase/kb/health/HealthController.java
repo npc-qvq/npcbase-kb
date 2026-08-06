@@ -1,11 +1,14 @@
 package cloud.npcbase.kb.health;
 
+import cloud.npcbase.kb.ai.OpenAiCompatibleClient;
 import cloud.npcbase.kb.config.KbProperties;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -24,12 +27,19 @@ public class HealthController {
     private final KbProperties properties;
 
     /**
+     * OpenAI 兼容模型接口客户端。
+     */
+    private final OpenAiCompatibleClient aiClient;
+
+    /**
      * 创建服务健康检查控制器。
      *
      * @param properties 知识库服务配置
+     * @param aiClient OpenAI 兼容模型接口客户端
      */
-    public HealthController(KbProperties properties) {
+    public HealthController(KbProperties properties, OpenAiCompatibleClient aiClient) {
         this.properties = properties;
+        this.aiClient = aiClient;
     }
 
     /**
@@ -41,7 +51,12 @@ public class HealthController {
     public Map<String, Object> health() {
         Map<String, Object> result = new HashMap<>();
         result.put("status", "UP");
-        result.put("chatEnabled", properties.getChat().isEnabled());
+        Map<String, Object> chatInfo = new LinkedHashMap<>();
+        chatInfo.put("activeProvider", aiClient.getActiveProvider());
+        chatInfo.put("activeDisplayName", aiClient.getActiveProviderDisplayName());
+        chatInfo.put("chatEnabled", aiClient.chatEnabled());
+        chatInfo.put("providers", aiClient.listProviders());
+        result.put("chat", chatInfo);
         result.put("embeddingEnabled", properties.getEmbedding().isEnabled());
         result.put("qdrantCollection", properties.getQdrant().getCollection());
         return result;

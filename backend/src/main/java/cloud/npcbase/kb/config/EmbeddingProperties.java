@@ -47,7 +47,7 @@ public class EmbeddingProperties {
     private String rerankModel;
 
     /**
-     * 重排后保留给本地回答或 DeepSeek 上下文的最大切片数。
+     * 重排后保留给本地回答或大模型上下文的最大切片数。
      */
     private int rerankTopN = 3;
 }

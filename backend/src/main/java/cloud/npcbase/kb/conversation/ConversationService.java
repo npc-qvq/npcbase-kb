@@ -25,16 +25,6 @@ import java.util.List;
 public class ConversationService {
 
     /**
-     * 小C启动口令的标准形式。
-     */
-    private static final String XIAO_C_ACTIVATION_COMMAND = "小c启动";
-
-    /**
-     * NPC启动口令的兼容形式。
-     */
-    private static final String NPC_ACTIVATION_COMMAND = "npc启动";
-
-    /**
      * 小C关闭口令的标准形式。
      */
     private static final String XIAO_C_DEACTIVATION_COMMAND = "小c关闭";
@@ -93,7 +83,7 @@ public class ConversationService {
         // 持久化新会话，使页面刷新或切换设备后仍可继续对话。
         conversationRepository.insert(conversation);
         // 保存欢迎消息，确保新会话打开后可直接看到小C的启动说明。
-        saveMessage(conversation.getId(), "assistant", "你好，我是小C，是属于用户NPC的私人小助理。现在可以直接提问，我会先使用本地资料模式回答；输入“小C启动”后，将启用 DeepSeek 增强回答。", null);
+        saveMessage(conversation.getId(), "assistant", "你好，我是小C，是属于用户NPC的私人小助理。现在可以直接提问，我会先使用本地资料模式回答；输入“小C启动”后，将启用大模型增强回答。", null);
         return toConversationView(conversation);
     }
 
@@ -159,16 +149,16 @@ public class ConversationService {
         }
         updateTitleIfNeeded(conversation, question);
         if (!conversation.isNpcStarted()) {
-            // 未启动模型时直接检索本地资料，不向 DeepSeek 发起请求。
+            // 未启动模型时直接检索本地资料，不向对话模型发起请求。
             NpcChatResponse answer = npcAssistantService.localChat(question);
             createdMessages.add(saveMessage(conversationId, "assistant", answer.answer(), serializeCitations(answer.citations())));
             conversation.touch();
             conversationRepository.updateById(conversation);
             return new ConversationChatResponse(toConversationView(conversation), createdMessages);
         }
-        // 服务重启后重新激活内存开关，不会向 DeepSeek 发起请求。
+        // 服务重启后重新激活内存开关，不会向对话模型发起请求。
         npcAssistantService.activate("小c启动");
-        // 小C已启动后，基于归档资料调用 DeepSeek 生成回答。
+        // 小C已启动后，基于归档资料调用对话模型生成回答。
         NpcChatResponse answer = npcAssistantService.chat(new NpcChatRequest(question, request.assistantPrompt()));
         createdMessages.add(saveMessage(conversationId, "assistant", answer.answer(), serializeCitations(answer.citations())));
         conversation.touch();
@@ -224,19 +214,17 @@ public class ConversationService {
     }
 
     /**
-     * 判断本次输入是否为小C启动口令。
+     * 判断本次输入是否为小C启动口令（支持提供商参数）。
      *
      * @param question 用户输入内容
      * @return 输入为支持的启动口令时返回 true
      */
     private boolean isActivationCommand(String question) {
-        String normalizedQuestion = question.replaceAll("\\s+", "").toLowerCase();
-        return XIAO_C_ACTIVATION_COMMAND.equals(normalizedQuestion)
-                || NPC_ACTIVATION_COMMAND.equals(normalizedQuestion);
+        return npcAssistantService.isActivationCommand(question);
     }
 
     /**
-     * 判断本次输入是否为关闭小C DeepSeek 增强模式的口令。
+     * 判断本次输入是否为关闭小C大模型增强模式的口令。
      *
      * @param question 用户输入内容
      * @return 输入为支持的关闭口令时返回 true

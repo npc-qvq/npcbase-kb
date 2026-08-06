@@ -31,10 +31,18 @@ kb:
     port: ${KB_QDRANT_PORT:6333}
     collection: ${KB_QDRANT_COLLECTION:npcbase_bge_m3}
   chat:
-    enabled: ${KB_CHAT_ENABLED:false}
-    base-url: ${KB_CHAT_BASE_URL:}
-    api-key: ${KB_CHAT_API_KEY:}
-    model: ${KB_CHAT_MODEL:}
+    active-provider: ${KB_CHAT_ACTIVE:deepseek}
+    providers:
+      deepseek:
+        enabled: ${KB_CHAT_PROVIDERS_DEEPSEEK_ENABLED:false}
+        base-url: ${KB_CHAT_PROVIDERS_DEEPSEEK_BASE_URL:}
+        api-key: ${KB_CHAT_PROVIDERS_DEEPSEEK_API_KEY:}
+        model: ${KB_CHAT_PROVIDERS_DEEPSEEK_MODEL:}
+      zhipu:
+        enabled: ${KB_CHAT_PROVIDERS_ZHIPU_ENABLED:false}
+        base-url: ${KB_CHAT_PROVIDERS_ZHIPU_BASE_URL:}
+        api-key: ${KB_CHAT_PROVIDERS_ZHIPU_API_KEY:}
+        model: ${KB_CHAT_PROVIDERS_ZHIPU_MODEL:}
   embedding:
     enabled: ${KB_EMBEDDING_ENABLED:false}
     base-url: ${KB_EMBEDDING_BASE_URL:}

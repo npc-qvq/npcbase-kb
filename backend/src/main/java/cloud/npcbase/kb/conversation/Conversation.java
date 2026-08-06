@@ -79,7 +79,7 @@ public class Conversation {
     }
 
     /**
-     * 将当前会话切换回不调用 DeepSeek 的资料检索模式。
+     * 将当前会话切换回不调用大模型的资料检索模式。
      */
     public void stopNpc() {
         this.npcStarted = false;

@@ -47,8 +47,26 @@ const App = {
     /** 当前打开会话中小C是否已收到启动口令。 */
     const npcStarted = ref(false)
 
-    /** 发送给后端的小C角色提示词，仅在启用 DeepSeek 增强回答时使用。 */
+    /** 发送给后端的小C角色提示词，仅在启用大模型增强回答时使用。 */
     const assistantPrompt = '你叫小C，是 NPC 的个人知识库助手。请使用中文，优先根据右侧归档资料回答；资料不足时如实说明。'
+
+    /** 后端可用的大模型提供商列表。 */
+    type ProviderInfo = { name: string; displayName: string; model: string; enabled: boolean; configured: boolean }
+
+    /** 从后端加载的对话模型提供商列表。 */
+    const providers = ref<ProviderInfo[]>([])
+
+    /** 当前激活的对话模型提供商名称。 */
+    const activeProviderName = ref('')
+
+    /** 当前激活的对话模型提供商显示名称。 */
+    const activeProviderDisplayName = computed(() => {
+      const provider = providers.value.find(p => p.name === activeProviderName.value)
+      return provider?.displayName || activeProviderName.value || '大模型'
+    })
+
+    /** 是否正在切换提供商，切换期间禁用下拉框。 */
+    const switchingProvider = ref(false)
 
     /** 中间输入框中尚未发送的内容，可输入启动口令或正常问题。 */
     const question = ref('')
@@ -77,15 +95,15 @@ const App = {
     /** 当前会话标题，用于中间栏头部标识正在进行的会话。 */
     const currentConversationTitle = computed(() => conversations.value.find(item => item.id === currentConversationId.value)?.title || '新对话')
 
-    /** 当前模式对应的输入框占位提示，用于说明启动或关闭 DeepSeek 的口令。 */
+    /** 当前模式对应的输入框占位提示，用于说明启动或关闭大模型的口令。 */
     const composerPlaceholder = computed(() => npcStarted.value
-      ? 'DeepSeek 已启用；继续提问，或输入“小c关闭”切回资料检索模式…'
-      : '直接提问，或输入“小c启动”启用 DeepSeek 增强回答…')
+      ? `${activeProviderDisplayName.value} 已启用；继续提问，或输入"小c关闭"切回资料检索模式…`
+      : '直接提问，或输入"小c启动"启用大模型增强回答…')
 
-    /** 当前模式对应的输入框辅助说明，避免用户误以为每次提问都会调用 DeepSeek。 */
+    /** 当前模式对应的输入框辅助说明，避免用户误以为每次提问都会调用大模型。 */
     const composerHint = computed(() => npcStarted.value
-      ? 'Enter 发送 · 输入“小c关闭”可停止调用 DeepSeek'
-      : 'Enter 发送 · 输入“小c启动”后才调用 DeepSeek')
+      ? `Enter 发送 · 输入"小c关闭"可停止调用 ${activeProviderDisplayName.value}`
+      : 'Enter 发送 · 输入"小c启动"后才调用大模型')
 
     /** 右侧归档区从后端读取的文档列表。 */
     const documents = ref<DocumentItem[]>([])
@@ -183,6 +201,53 @@ const App = {
      */
     function closeChatError() {
       chatError.value = ''
+    }
+
+    /**
+     * 从后端加载对话模型提供商列表和当前激活状态。
+     */
+    async function loadProviders() {
+      const response = await request('/api/npc/providers')
+      if (response.ok) {
+        const body = await response.json()
+        activeProviderName.value = body.activeProvider || ''
+        providers.value = body.providers || []
+      }
+    }
+
+    /**
+     * 切换激活的对话模型提供商。
+     *
+     * @param name 目标提供商名称
+     */
+    async function switchProvider(name: string) {
+      if (switchingProvider.value || name === activeProviderName.value) {
+        return
+      }
+      switchingProvider.value = true
+      try {
+        const response = await request(`/api/npc/provider?name=${encodeURIComponent(name)}`, { method: 'POST' })
+        if (response.ok) {
+          const body = await response.json()
+          activeProviderName.value = body.activeProvider || name
+        } else {
+          chatError.value = await errorOf(response, '切换模型失败')
+        }
+      } catch {
+        chatError.value = '网络请求失败，模型切换未完成。'
+      } finally {
+        switchingProvider.value = false
+      }
+    }
+
+    /**
+     * 下拉框选择模型时触发，提取选中值后切换提供商。
+     *
+     * @param event select 元素的 change 事件
+     */
+    function onProviderChange(event: Event) {
+      const target = event.target as HTMLSelectElement
+      switchProvider(target.value)
     }
 
     /**
@@ -568,7 +633,7 @@ const App = {
     }
 
     /**
-     * 提交启动口令或问题；默认使用本地资料模式，启动小C后才请求 DeepSeek。
+     * 提交启动口令或问题；默认使用本地资料模式，启动小C后才请求大模型。
      */
     async function send() {
       const content = question.value.trim()
@@ -593,7 +658,7 @@ const App = {
       // “正在思考”消息刚插入后再次滚动，确保它完整显示在底部输入框上方。
       await scrollToLatestMessage()
       try {
-        // 后端保存用户输入，未启动时使用本地资料模式，启动后调用 DeepSeek。
+        // 后端保存用户输入，未启动时使用本地资料模式，启动后调用大模型。
         const response = await request(`/api/conversations/${conversationId}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -627,6 +692,7 @@ const App = {
      * 页面初次打开时加载资料归档，不会触发任何模型调用。
      */
     onMounted(async () => {
+      await loadProviders()
       await loadConversations()
       if (conversations.value.length) {
         await selectConversation(conversations.value[0])
@@ -637,6 +703,8 @@ const App = {
     })
 
     return {
+      activeProviderDisplayName,
+      activeProviderName,
       archiveMessage,
       asking,
       chatError,
@@ -653,10 +721,13 @@ const App = {
       documentStatusText,
       documents,
       file,
+      loadProviders,
+      onProviderChange,
       messageList,
       messages,
       npcStarted,
       pendingDelete,
+      providers,
       question,
       refreshDocuments,
       handleMessageListScroll,
@@ -667,6 +738,8 @@ const App = {
       selectConversation,
       scrollToMessage,
       startNewChat,
+      switchingProvider,
+      switchProvider,
       title,
       questionPreview,
       activePromptId,
@@ -702,11 +775,11 @@ const App = {
             <button class="history-delete" title="删除会话" @click="deleteConversation(conversation)">×</button>
           </div>
         </section>
-        <div class="sidebar-footer"><span class="status-dot" :class="{ active: npcStarted }"></span>{{ npcStarted ? 'DeepSeek 增强模式已启用' : '本地资料模式运行中' }}</div>
+        <div class="sidebar-footer"><span class="status-dot" :class="{ active: npcStarted }"></span><span class="status-label">{{ npcStarted ? activeProviderDisplayName + ' 增强模式已启用' : '本地资料模式运行中' }}</span><select v-if="providers.length > 1" class="provider-select" :value="activeProviderName" :disabled="switchingProvider" @change="onProviderChange"><option v-for="provider in providers" :key="provider.name" :value="provider.name" :disabled="!provider.enabled || !provider.configured">{{ provider.displayName }}{{ (!provider.enabled || !provider.configured) ? '（未配置）' : '' }}</option></select></div>
       </aside>
 
       <main class="chat-main">
-        <header class="chat-header"><div><strong>{{ currentConversationTitle }}</strong><small>小C · {{ npcStarted ? 'DeepSeek 增强回答' : '本地资料模式' }}</small></div><span>{{ npcStarted ? 'DeepSeek 已启用' : '本地资料模式' }}</span></header>
+        <header class="chat-header"><div><strong>{{ currentConversationTitle }}</strong><small>小C · {{ npcStarted ? activeProviderDisplayName + ' 增强回答' : '本地资料模式' }}</small></div><span>{{ npcStarted ? activeProviderDisplayName + ' 已启用' : '本地资料模式' }}</span></header>
         <section ref="messageList" class="message-list" @click="releaseConversationNavigator" @scroll="handleMessageListScroll">
           <article v-for="message in messages" :key="message.id" :ref="element => registerMessageElement(message.id, element)" class="message" :class="message.role">
             <div class="avatar">{{ message.role === 'assistant' ? 'C' : message.role === 'user' ? '我' : '!' }}</div>

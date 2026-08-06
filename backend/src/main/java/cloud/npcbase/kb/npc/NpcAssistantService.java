@@ -30,20 +30,14 @@ import java.util.stream.Collectors;
 public class NpcAssistantService {
 
     /**
-     * 小C的默认角色提示词。
+     * 小C启动口令去除空白后的标准前缀。
      */
-    private static final String DEFAULT_SYSTEM_PROMPT = "你叫小C，是 NPC 的个人知识库助手，使用 DeepSeek 模型提供回答。"
-            + "请优先依据下方提供的资料回答，不能从资料中确定时要明确说明。回答使用中文，表达清晰、友好、简洁。";
+    private static final String XIAO_C_ACTIVATION_PREFIX = "小c启动";
 
     /**
-     * 小C启动口令去除空白后的标准形式。
+     * NPC启动口令去除空白后的标准前缀。
      */
-    private static final String NPC_ACTIVATION_COMMAND = "npc启动";
-
-    /**
-     * 小C启动口令去除空白后的标准形式。
-     */
-    private static final String XIAO_C_ACTIVATION_COMMAND = "小c启动";
+    private static final String NPC_ACTIVATION_PREFIX = "npc启动";
 
     /**
      * 从本地资料中提取 HTTP 地址的正则表达式。
@@ -96,18 +90,39 @@ public class NpcAssistantService {
     /**
      * 校验启动口令，并在口令正确后允许当前进程调用模型。
      *
+     * <p>支持在口令后追加提供商名称来切换对话模型：
+     * <ul>
+     *   <li>"小c启动" —— 使用当前激活的提供商</li>
+     *   <li>"小c启动 智谱" / "小c启动 zhipu" —— 切换到智谱后启动</li>
+     *   <li>"小c启动 deepseek" —— 切换到 DeepSeek 后启动</li>
+     *   <li>"npc启动" —— 向后兼容，使用当前激活的提供商</li>
+     * </ul>
+     *
      * @param command 用户输入的启动口令
      * @return 小C启动处理结果
      */
     public NpcActivationResponse activate(String command) {
-        if (!isActivationCommand(command)) {
-            return new NpcActivationResponse(false, "请输入“小c启动”后再调用小C。");
+        String normalized = normalizeCommand(command);
+        if (!isActivationCommand(normalized)) {
+            return new NpcActivationResponse(false, "请输入“小c启动”后再调用小C。", null);
+        }
+        String providerName = extractProviderFromCommand(normalized);
+        if (providerName != null) {
+            try {
+                aiClient.switchProvider(providerName);
+            } catch (Exception exception) {
+                return new NpcActivationResponse(false, exception.getMessage(), null);
+            }
         }
         if (!aiClient.chatEnabled()) {
-            return new NpcActivationResponse(false, "DeepSeek 对话服务尚未配置完成，当前仍可使用资料检索模式。");
+            String displayName = aiClient.getActiveProviderDisplayName();
+            return new NpcActivationResponse(false, displayName + " 对话服务尚未配置完成，当前仍可使用资料检索模式。",
+                    aiClient.getActiveProvider());
         }
         active.set(true);
-        return new NpcActivationResponse(true, "小C 已启动，现在可以基于知识库资料回答问题。");
+        String displayName = aiClient.getActiveProviderDisplayName();
+        return new NpcActivationResponse(true, "小C 已启动（" + displayName + "），现在可以基于知识库资料回答问题。",
+                aiClient.getActiveProvider());
     }
 
     /**
@@ -120,13 +135,29 @@ public class NpcAssistantService {
     }
 
     /**
-     * 关闭当前服务进程中的 DeepSeek 对话开关，使后续会话回到资料检索模式。
+     * 关闭当前服务进程中的对话模型开关，使后续会话回到资料检索模式。
      *
      * @return 小C关闭后的处理结果
      */
     public NpcActivationResponse deactivate() {
         active.set(false);
-        return new NpcActivationResponse(false, "小C 已关闭，后续提问将使用资料检索模式，不调用 DeepSeek。");
+        return new NpcActivationResponse(false, "小C 已关闭，后续提问将使用资料检索模式，不调用大模型。",
+                aiClient.getActiveProvider());
+    }
+
+    /**
+     * 判断用户输入是否为允许启动小C的口令。
+     *
+     * <p>精确匹配 "小c启动" 或 "npc启动" 时返回 true；当口令后追加可解析的
+     * 提供商名称时也返回 true；追加的内容无法解析为提供商时返回 false，
+     * 使该输入作为普通问题处理。
+     *
+     * @param command 用户输入的启动口令
+     * @return 输入为小C或NPC启动口令时返回 true
+     */
+    public boolean isActivationCommand(String command) {
+        String normalized = normalizeCommand(command);
+        return isNormalizedActivationCommand(normalized);
     }
 
     /**
@@ -186,15 +217,35 @@ public class NpcAssistantService {
     }
 
     /**
-     * 判断用户输入是否为允许启动小C的口令。
+     * 判断已规范化的口令是否为启动小C的指令。
      *
-     * @param command 用户输入的启动口令
-     * @return 输入为小C或NPC启动口令时返回 true
+     * @param normalized 已去除空白并小写的口令
+     * @return 精确匹配或带有可解析提供商后缀时返回 true
      */
-    private boolean isActivationCommand(String command) {
-        String normalizedCommand = normalizeCommand(command);
-        return XIAO_C_ACTIVATION_COMMAND.equals(normalizedCommand)
-                || NPC_ACTIVATION_COMMAND.equals(normalizedCommand);
+    private boolean isNormalizedActivationCommand(String normalized) {
+        if (XIAO_C_ACTIVATION_PREFIX.equals(normalized) || NPC_ACTIVATION_PREFIX.equals(normalized)) {
+            return true;
+        }
+        return extractProviderFromCommand(normalized) != null;
+    }
+
+    /**
+     * 从已规范化的口令中提取提供商名称。
+     *
+     * @param normalized 已去除空白并小写的口令
+     * @return 解析到的标准提供商名称；无后缀或无法解析时返回 null
+     */
+    private String extractProviderFromCommand(String normalized) {
+        String remainder = null;
+        if (normalized.startsWith(XIAO_C_ACTIVATION_PREFIX)) {
+            remainder = normalized.substring(XIAO_C_ACTIVATION_PREFIX.length());
+        } else if (normalized.startsWith(NPC_ACTIVATION_PREFIX)) {
+            remainder = normalized.substring(NPC_ACTIVATION_PREFIX.length());
+        }
+        if (remainder == null || remainder.isEmpty()) {
+            return null;
+        }
+        return aiClient.resolveProviderName(remainder);
     }
 
     /**
@@ -230,7 +281,7 @@ public class NpcAssistantService {
         List<String> keywords = extractSearchKeywords(question);
         Map<String, DocumentChunk> matchedChunks = new LinkedHashMap<>();
         for (String keyword : keywords) {
-            // 使用问题中的连续关键词逐个查询，支持“武汉太康”“卫生专网”等本地精确命中。
+            // 使用问题中的连续关键词逐个查询，支持"武汉太康""卫生专网"等本地精确命中。
             List<DocumentChunk> keywordChunks = chunkRepository.findTop10ByContentContainingOrderByChunkNoAsc(keyword);
             for (DocumentChunk chunk : keywordChunks) {
                 matchedChunks.putIfAbsent(chunk.getId(), chunk);
@@ -353,16 +404,28 @@ public class NpcAssistantService {
     }
 
     /**
+     * 根据当前激活的对话模型动态生成默认角色提示词。
+     *
+     * @return 包含当前模型名称的系统提示词
+     */
+    private String buildDefaultSystemPrompt() {
+        String displayName = aiClient.getActiveProviderDisplayName();
+        return "你叫小C，是 NPC 的个人知识库助手，使用 " + displayName + " 模型提供回答。"
+                + "请优先依据下方提供的资料回答，不能从资料中确定时要明确说明。回答使用中文，表达清晰、友好、简洁。";
+    }
+
+    /**
      * 组合默认角色提示词和用户在页面设置的补充提示词。
      *
      * @param assistantPrompt 用户补充的小C角色提示词
      * @return 发送给模型的系统提示词
      */
     private String buildSystemPrompt(String assistantPrompt) {
+        String systemPrompt = buildDefaultSystemPrompt();
         if (assistantPrompt == null || assistantPrompt.isBlank()) {
-            return DEFAULT_SYSTEM_PROMPT;
+            return systemPrompt;
         }
-        return DEFAULT_SYSTEM_PROMPT + "\n\n用户对小C的额外设定：\n" + assistantPrompt.trim();
+        return systemPrompt + "\n\n用户对小C的额外设定：\n" + assistantPrompt.trim();
     }
 
     /**
@@ -399,7 +462,7 @@ public class NpcAssistantService {
             return "当前知识库还没有可用资料。请先在右侧上传并等待资料解析完成。";
         }
         List<String> urls = findUrls(chunks);
-        StringBuilder answer = new StringBuilder("当前为资料检索模式，未连接 DeepSeek。\n\n");
+        StringBuilder answer = new StringBuilder("当前为资料检索模式，未连接大模型。\n\n");
         if (!urls.isEmpty()) {
             answer.append("从命中资料中提取到以下地址：\n");
             for (String url : urls) {
@@ -414,7 +477,7 @@ public class NpcAssistantService {
                     .append("（切片 ").append(citation.chunkNo()).append("）\n")
                     .append(abbreviate(citation.excerpt())).append("\n\n");
         }
-        answer.append("如需小C整理、归纳或生成更自然的回答，请输入“小c启动”启用 DeepSeek。\n");
+        answer.append("如需小C整理、归纳或生成更自然的回答，请输入“小c启动”启用大模型增强。\n");
         return answer.toString();
     }
 

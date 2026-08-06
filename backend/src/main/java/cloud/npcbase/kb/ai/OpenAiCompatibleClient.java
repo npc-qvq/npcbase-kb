@@ -1,6 +1,6 @@
 package cloud.npcbase.kb.ai;
 
-import cloud.npcbase.kb.config.ChatProperties;
+import cloud.npcbase.kb.config.ChatProviderProperties;
 import cloud.npcbase.kb.config.EmbeddingProperties;
 import cloud.npcbase.kb.config.KbProperties;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -14,19 +14,38 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * 分别调用对话模型和向量模型的 OpenAI 兼容接口，避免 DeepSeek 与硅基流动共用配置。
+ * 分别调用对话模型和向量模型的 OpenAI 兼容接口，支持多对话提供商运行时切换。
  *
  * @author NPC
  * @date 2026-07-16 16:23:00
  */
 @Component
 public class OpenAiCompatibleClient {
+
+    /**
+     * 对话模型提供商别名到标准名称的映射，用于口令解析。
+     */
+    private static final Map<String, String> PROVIDER_ALIASES = Map.of(
+            "智谱", "zhipu",
+            "zhipu", "zhipu",
+            "glm", "zhipu",
+            "deepseek", "deepseek",
+            "ds", "deepseek");
+
+    /**
+     * 对话模型提供商名称到展示名称的映射。
+     */
+    private static final Map<String, String> PROVIDER_DISPLAY_NAMES = Map.of(
+            "deepseek", "DeepSeek",
+            "zhipu", "智谱GLM");
 
     /**
      * 提供聊天、向量模型及其密钥的知识库服务配置。
@@ -39,9 +58,14 @@ public class OpenAiCompatibleClient {
     private final ObjectMapper objectMapper;
 
     /**
-     * 对外调用 DeepSeek 和硅基流动接口的 HTTP 客户端。
+     * 对外调用 DeepSeek、智谱和硅基流动接口的 HTTP 客户端。
      */
     private final HttpClient httpClient;
+
+    /**
+     * 当前激活的对话模型提供商名称，使用 volatile 保证多线程可见性。
+     */
+    private volatile String activeProvider;
 
     /**
      * 创建 OpenAI 兼容模型服务客户端。
@@ -53,6 +77,8 @@ public class OpenAiCompatibleClient {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
+        String configuredActive = properties.getChat().getActiveProvider();
+        this.activeProvider = hasText(configuredActive) ? configuredActive : "deepseek";
     }
 
     /**
@@ -86,38 +112,134 @@ public class OpenAiCompatibleClient {
     }
 
     /**
-     * 使用已配置的 DeepSeek 对话模型，根据系统提示词和用户上下文生成回答。
+     * 使用当前激活的对话模型，根据系统提示词和用户上下文生成回答。
      *
      * @param systemPrompt 约束小C角色与回答范围的系统提示词
      * @param userPrompt 用户问题及检索出的知识库上下文
-     * @return DeepSeek 生成的回答文本
+     * @return 对话模型生成的回答文本
      */
     public String chat(String systemPrompt, String userPrompt) {
         validateChatEnabled();
-        ChatProperties chat = properties.getChat();
+        ChatProviderProperties provider = requireActiveProviderConfig();
         List<Map<String, String>> messages = List.of(
                 Map.of("role", "system", "content", systemPrompt),
                 Map.of("role", "user", "content", userPrompt));
-        Map<String, Object> requestBody = Map.of("model", requireValue(chat.getModel(), "KB_CHAT_MODEL"),
+        Map<String, Object> requestBody = Map.of("model", requireValue(provider.getModel(), "KB_CHAT_PROVIDERS_*_MODEL"),
                 "temperature", 0.2,
                 "messages", messages);
-        // 仅在小C已被启动后由上层服务调用 DeepSeek 生成自然语言回答。
-        JsonNode response = post(chat.getBaseUrl(), chat.getApiKey(), "chat/completions", requestBody);
+        // 仅在小C已被启动后由上层服务调用对话模型生成自然语言回答。
+        JsonNode response = post(provider.getBaseUrl(), provider.getApiKey(), "chat/completions", requestBody);
         String answer = response.path("choices").path(0).path("message").path("content").asText();
         if (answer == null || answer.trim().isEmpty()) {
-            throw new IllegalStateException("DeepSeek 未返回回答内容");
+            throw new IllegalStateException("对话模型未返回回答内容");
         }
         return answer.trim();
     }
 
     /**
-     * 判断 DeepSeek 对话能力是否完成启用和基础模型配置。
+     * 判断当前激活的对话模型是否完成启用和基础模型配置。
      *
      * @return 对话模型可调用时返回 true
      */
     public boolean chatEnabled() {
-        ChatProperties chat = properties.getChat();
-        return chat.isEnabled() && hasText(chat.getBaseUrl()) && hasText(chat.getApiKey()) && hasText(chat.getModel());
+        ChatProviderProperties provider = getActiveProviderConfig();
+        return provider != null && provider.isEnabled() && isProviderConfigured(provider);
+    }
+
+    /**
+     * 返回当前激活的对话模型提供商名称。
+     *
+     * @return 提供商名称
+     */
+    public String getActiveProvider() {
+        return activeProvider;
+    }
+
+    /**
+     * 返回当前激活的对话模型提供商展示名称。
+     *
+     * @return 面向用户展示的提供商名称
+     */
+    public String getActiveProviderDisplayName() {
+        return getProviderDisplayName(activeProvider);
+    }
+
+    /**
+     * 返回全部对话模型提供商的配置摘要，包含名称、模型、启用和配置完整状态。
+     *
+     * @return 提供商信息列表
+     */
+    public List<Map<String, Object>> listProviders() {
+        Map<String, ChatProviderProperties> providers = properties.getChat().getProviders();
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (providers == null) {
+            return result;
+        }
+        for (Map.Entry<String, ChatProviderProperties> entry : providers.entrySet()) {
+            ChatProviderProperties config = entry.getValue();
+            Map<String, Object> info = new LinkedHashMap<>();
+            info.put("name", entry.getKey());
+            info.put("displayName", getProviderDisplayName(entry.getKey()));
+            info.put("model", config.getModel());
+            info.put("enabled", config.isEnabled());
+            info.put("configured", isProviderConfigured(config));
+            result.add(info);
+        }
+        return result;
+    }
+
+    /**
+     * 切换当前激活的对话模型提供商。
+     *
+     * @param name 目标提供商名称
+     * @throws IllegalArgumentException 当提供商不存在时抛出
+     * @throws IllegalStateException 当提供商未启用或配置不完整时抛出
+     */
+    public void switchProvider(String name) {
+        if (!hasText(name)) {
+            throw new IllegalArgumentException("请指定要切换的对话模型提供商名称");
+        }
+        Map<String, ChatProviderProperties> providers = properties.getChat().getProviders();
+        ChatProviderProperties provider = providers == null ? null : providers.get(name);
+        if (provider == null) {
+            throw new IllegalArgumentException("未找到名为 " + name + " 的对话模型提供商");
+        }
+        if (!provider.isEnabled()) {
+            throw new IllegalStateException("提供商 " + getProviderDisplayName(name) + " 当前未启用");
+        }
+        if (!isProviderConfigured(provider)) {
+            throw new IllegalStateException("提供商 " + getProviderDisplayName(name) + " 配置不完整，请检查 baseUrl、apiKey 和 model");
+        }
+        this.activeProvider = name;
+    }
+
+    /**
+     * 将用户输入的别名或名称解析为已配置的对话模型提供商标准名称。
+     *
+     * @param alias 用户输入的提供商别名或名称
+     * @return 匹配到的标准提供商名称；未匹配时返回 null
+     */
+    public String resolveProviderName(String alias) {
+        if (!hasText(alias)) {
+            return null;
+        }
+        String normalized = alias.trim().toLowerCase(Locale.ROOT);
+        Map<String, ChatProviderProperties> providers = properties.getChat().getProviders();
+        if (providers == null || providers.isEmpty()) {
+            return null;
+        }
+        // 优先直接匹配已配置的提供商名称。
+        for (String name : providers.keySet()) {
+            if (name.toLowerCase(Locale.ROOT).equals(normalized)) {
+                return name;
+            }
+        }
+        // 其次通过别名映射解析。
+        String resolved = PROVIDER_ALIASES.get(normalized);
+        if (resolved != null && providers.containsKey(resolved)) {
+            return resolved;
+        }
+        return null;
     }
 
     /**
@@ -260,11 +382,11 @@ public class OpenAiCompatibleClient {
     }
 
     /**
-     * 校验 DeepSeek 对话能力已经配置完成。
+     * 校验当前激活的对话模型已经配置完成。
      */
     private void validateChatEnabled() {
         if (!chatEnabled()) {
-            throw new IllegalStateException("请配置并启用 KB_CHAT_ENABLED、KB_CHAT_BASE_URL、KB_CHAT_API_KEY 和 KB_CHAT_MODEL");
+            throw new IllegalStateException("请配置并启用当前激活的对话模型提供商（" + getProviderDisplayName(activeProvider) + "）");
         }
     }
 
@@ -284,6 +406,57 @@ public class OpenAiCompatibleClient {
         if (!rerankEnabled()) {
             throw new IllegalStateException("请配置并启用 KB_RERANK_ENABLED 和 KB_RERANK_MODEL");
         }
+    }
+
+    /**
+     * 返回当前激活提供商的配置，未找到时返回 null。
+     *
+     * @return 当前激活提供商的配置对象
+     */
+    private ChatProviderProperties getActiveProviderConfig() {
+        Map<String, ChatProviderProperties> providers = properties.getChat().getProviders();
+        if (providers == null || providers.isEmpty()) {
+            return null;
+        }
+        return providers.get(activeProvider);
+    }
+
+    /**
+     * 返回当前激活提供商的配置，未找到时抛出异常。
+     *
+     * @return 当前激活提供商的配置对象
+     * @throws IllegalStateException 当激活提供商未配置时抛出
+     */
+    private ChatProviderProperties requireActiveProviderConfig() {
+        ChatProviderProperties provider = getActiveProviderConfig();
+        if (provider == null) {
+            throw new IllegalStateException("当前激活的对话模型提供商 " + activeProvider + " 未配置");
+        }
+        return provider;
+    }
+
+    /**
+     * 判断单个提供商的配置是否完整。
+     *
+     * @param provider 提供商配置
+     * @return baseUrl、apiKey 和 model 均非空时返回 true
+     */
+    private boolean isProviderConfigured(ChatProviderProperties provider) {
+        return hasText(provider.getBaseUrl()) && hasText(provider.getApiKey()) && hasText(provider.getModel());
+    }
+
+    /**
+     * 返回提供商的展示名称，未配置映射时回退为提供商名称本身。
+     *
+     * @param name 提供商标准名称
+     * @return 面向用户展示的名称
+     */
+    private String getProviderDisplayName(String name) {
+        if (!hasText(name)) {
+            return "大模型";
+        }
+        String displayName = PROVIDER_DISPLAY_NAMES.get(name.toLowerCase(Locale.ROOT));
+        return hasText(displayName) ? displayName : name;
     }
 
     /**
