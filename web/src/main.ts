@@ -239,6 +239,12 @@ const App = {
     /** 鼠标从圆点移动到浮窗期间使用的延迟关闭计时器。 */
     let navigatorCloseTimer: number | undefined
 
+    /** 程序化平滑滚动结束后释放目标高亮的计时器。 */
+    let navigatorScrollUnlockTimer: number | undefined
+
+    /** 点击导航后正在滚动前往的用户消息主键；非空时禁止滚动监听覆盖高亮。 */
+    let navigatorScrollTargetId = ''
+
     /** 当前阅读位置对应的最近一条用户提问，用于在导航列表中高亮。 */
     const activePromptId = ref('')
 
@@ -798,6 +804,11 @@ const App = {
      */
     function handleMessageListScroll() {
       shouldAutoFollowLatest.value = isNearMessageListBottom()
+      if (navigatorScrollTargetId) {
+        activePromptId.value = navigatorScrollTargetId
+        scheduleNavigatorScrollUnlock()
+        return
+      }
       updateActivePrompt()
     }
 
@@ -837,6 +848,10 @@ const App = {
       if (!messageList.value) {
         return
       }
+      if (navigatorScrollTargetId) {
+        activePromptId.value = navigatorScrollTargetId
+        return
+      }
       const readingLine = messageList.value.scrollTop + messageList.value.clientHeight * 0.3
       let currentId = userMessages.value[0]?.id || ''
       for (const message of userMessages.value) {
@@ -868,6 +883,30 @@ const App = {
         window.clearTimeout(navigatorCloseTimer)
         navigatorCloseTimer = undefined
       }
+    }
+
+    /**
+     * 延迟释放程序化滚动锁；连续滚动事件会刷新计时，确保平滑滚动彻底结束。
+     *
+     * @param delay 距离最后一次滚动事件的等待毫秒数
+     */
+    function scheduleNavigatorScrollUnlock(delay = 180) {
+      if (navigatorScrollUnlockTimer !== undefined) {
+        window.clearTimeout(navigatorScrollUnlockTimer)
+      }
+      navigatorScrollUnlockTimer = window.setTimeout(() => {
+        navigatorScrollUnlockTimer = undefined
+        navigatorScrollTargetId = ''
+      }, delay)
+    }
+
+    /** 清除尚未完成的程序化定位状态。 */
+    function clearNavigatorScrollLock() {
+      if (navigatorScrollUnlockTimer !== undefined) {
+        window.clearTimeout(navigatorScrollUnlockTimer)
+        navigatorScrollUnlockTimer = undefined
+      }
+      navigatorScrollTargetId = ''
     }
 
     /**
@@ -939,6 +978,7 @@ const App = {
      */
     function releaseConversationNavigator() {
       clearNavigatorCloseTimer()
+      clearNavigatorScrollLock()
       conversationNavigatorPinned.value = false
       conversationNavigatorExpanded.value = false
     }
@@ -954,9 +994,11 @@ const App = {
       if (!target || !messageList.value) {
         return
       }
+      navigatorScrollTargetId = messageId
+      activePromptId.value = messageId
       const targetTop = target.offsetTop - messageList.value.offsetTop - 20
       messageList.value.scrollTo({ top: Math.max(targetTop, 0), behavior: 'smooth' })
-      window.setTimeout(updateActivePrompt, 350)
+      scheduleNavigatorScrollUnlock(600)
     }
 
     /**
