@@ -17,7 +17,7 @@ public class ChatProperties {
     /**
      * 当前激活的对话模型提供商名称，对应 providers 中的键。
      */
-    private String activeProvider = "deepseek";
+    private String activeProvider = "zhipu";
 
     /**
      * 全部对话模型提供商配置，键为提供商名称（如 deepseek、zhipu）。

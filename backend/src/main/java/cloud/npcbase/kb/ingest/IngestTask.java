@@ -1,12 +1,12 @@
 package cloud.npcbase.kb.ingest;
 
+import cloud.npcbase.kb.common.SnowflakeIdGenerator;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 /**
  * 记录文档解析、切片和索引的异步执行状态。
@@ -71,7 +71,7 @@ public class IngestTask {
      * @param documentId 待处理文档主键
      */
     public IngestTask(String documentId) {
-        this.id = UUID.randomUUID().toString();
+        this.id = SnowflakeIdGenerator.nextId();
         this.documentId = documentId;
         this.status = "PENDING";
         this.createdAt = LocalDateTime.now();

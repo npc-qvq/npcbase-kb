@@ -42,6 +42,15 @@ type PendingDelete = {
   title: string
 }
 
+/** 后端返回的当前浏览器访问权限与公开体验状态。 */
+type AccessStatus = {
+  unlocked: boolean
+  demoConversationId: string | null
+  remainingMessages: number
+  messageLimit: number
+  publicProvider: string
+}
+
 const App = {
   setup() {
     /** 当前打开会话中小C是否已收到启动口令。 */
@@ -65,8 +74,38 @@ const App = {
       return provider?.displayName || activeProviderName.value || '大模型'
     })
 
-    /** 是否正在切换提供商，切换期间禁用下拉框。 */
+    /** 是否正在切换提供商，切换期间禁用模型选择器。 */
     const switchingProvider = ref(false)
+
+    /** 自定义模型选择菜单是否展开。 */
+    const providerMenuOpen = ref(false)
+
+    /** 当前浏览器是否已经通过唯一访问密钥解锁。 */
+    const accessUnlocked = ref(false)
+
+    /** 服务器配置的唯一公开测试会话主键。 */
+    const demoConversationId = ref('')
+
+    /** 当前匿名访客剩余的测试会话发送次数。 */
+    const remainingMessages = ref(0)
+
+    /** 单个匿名访客允许的测试会话消息上限。 */
+    const publicMessageLimit = ref(5)
+
+    /** 密钥输入弹窗是否正在显示。 */
+    const accessModalOpen = ref(false)
+
+    /** 密钥弹窗中尚未提交的访问密钥。 */
+    const accessKey = ref('')
+
+    /** 密钥验证或权限接口失败时展示的错误。 */
+    const accessError = ref('')
+
+    /** 密钥验证请求执行期间禁用重复提交。 */
+    const unlockingAccess = ref(false)
+
+    /** 密钥输入框元素，用于打开弹窗后自动聚焦。 */
+    const accessKeyInput = ref<HTMLInputElement | null>(null)
 
     /** 中间输入框中尚未发送的内容，可输入启动口令或正常问题。 */
     const question = ref('')
@@ -83,6 +122,21 @@ const App = {
     /** 删除请求执行期间禁用弹窗按钮，避免重复提交。 */
     const deleting = ref(false)
 
+    /** 当前正在编辑名称的历史会话；为空时不显示重命名弹窗。 */
+    const editingConversation = ref<Conversation | null>(null)
+
+    /** 重命名弹窗中尚未提交的会话名称。 */
+    const conversationTitleDraft = ref('')
+
+    /** 会话重命名请求执行期间禁用弹窗按钮，避免重复提交。 */
+    const renamingConversation = ref(false)
+
+    /** 重命名校验或接口失败时在弹窗内展示的错误。 */
+    const renameConversationError = ref('')
+
+    /** 重命名输入框元素，用于打开弹窗后自动聚焦并选中原名称。 */
+    const renameInput = ref<HTMLInputElement | null>(null)
+
     /** 对话区展示当前选中会话的消息序列。 */
     const messages = ref<ChatMessage[]>([])
 
@@ -95,15 +149,56 @@ const App = {
     /** 当前会话标题，用于中间栏头部标识正在进行的会话。 */
     const currentConversationTitle = computed(() => conversations.value.find(item => item.id === currentConversationId.value)?.title || '新对话')
 
-    /** 当前模式对应的输入框占位提示，用于说明启动或关闭大模型的口令。 */
-    const composerPlaceholder = computed(() => npcStarted.value
-      ? `${activeProviderDisplayName.value} 已启用；继续提问，或输入"小c关闭"切回资料检索模式…`
-      : '直接提问，或输入"小c启动"启用大模型增强回答…')
+    /** 当前选择的是否为服务器指定的公开测试会话。 */
+    const isPublicDemoConversation = computed(() => Boolean(currentConversationId.value)
+      && currentConversationId.value === demoConversationId.value)
 
-    /** 当前模式对应的输入框辅助说明，避免用户误以为每次提问都会调用大模型。 */
-    const composerHint = computed(() => npcStarted.value
-      ? `Enter 发送 · 输入"小c关闭"可停止调用 ${activeProviderDisplayName.value}`
-      : 'Enter 发送 · 输入"小c启动"后才调用大模型')
+    /** 未解锁访客是否已经用完测试会话的公开发送次数。 */
+    const publicQuotaExhausted = computed(() => !accessUnlocked.value
+      && isPublicDemoConversation.value
+      && remainingMessages.value <= 0)
+
+    /** 当前浏览器是否允许在所选会话中发送消息。 */
+    const canSendMessage = computed(() => accessUnlocked.value
+      || (isPublicDemoConversation.value && remainingMessages.value > 0))
+
+    /** 页面实际展示的模型模式。 */
+    const effectiveNpcStarted = computed(() => npcStarted.value)
+
+    /** 当前权限和会话对应的输入框占位提示。 */
+    const composerPlaceholder = computed(() => {
+      if (!accessUnlocked.value && !isPublicDemoConversation.value) {
+        return '该会话为只读内容，输入访问密钥后才能提问…'
+      }
+      if (publicQuotaExhausted.value) {
+        return '公开体验次数已用完，输入访问密钥后继续…'
+      }
+      if (!accessUnlocked.value) {
+        return npcStarted.value
+          ? `智谱 GLM 已启用，还可提问 ${remainingMessages.value} 次…`
+          : `公开测试还可提问 ${remainingMessages.value} 次；输入“小c启动”可启用大模型回答…`
+      }
+      return npcStarted.value
+        ? `${activeProviderDisplayName.value} 已启用；继续提问，或输入"小c关闭"切回资料检索模式…`
+        : '直接提问，或输入"小c启动"启用大模型增强回答…'
+    })
+
+    /** 当前权限和模型模式对应的输入框辅助说明。 */
+    const composerHint = computed(() => {
+      if (!accessUnlocked.value && !isPublicDemoConversation.value) {
+        return '公开模式可查询该会话，但不能在这里发送消息'
+      }
+      if (!accessUnlocked.value) {
+        return publicQuotaExhausted.value
+          ? '体验次数已用完 · 输入密钥可解锁全部操作'
+          : npcStarted.value
+            ? `公开体验 · 智谱 GLM 已启用 · 剩余 ${remainingMessages.value}/${publicMessageLimit.value} 次 · 输入“小c关闭”可回到资料模式`
+            : `公开体验 · 剩余 ${remainingMessages.value}/${publicMessageLimit.value} 次 · 输入“小c启动”可启用大模型回答`
+      }
+      return npcStarted.value
+        ? `Enter 发送 · 输入"小c关闭"可停止调用 ${activeProviderDisplayName.value}`
+        : 'Enter 发送 · 输入"小c启动"后才调用大模型'
+    })
 
     /** 右侧归档区从后端读取的文档列表。 */
     const documents = ref<DocumentItem[]>([])
@@ -171,18 +266,132 @@ const App = {
     }
 
     /**
-     * 调用后端接口并返回原始响应，接口未使用登录或令牌校验。
+     * 将后端访问状态同步到页面响应式状态。
      *
-     * @param path 后端接口路径
-     * @param options fetch 请求配置
-     * @returns 后端响应对象
+     * @param status 后端返回的访问状态
+     * @returns 无返回值
      */
-    async function request(path: string, options: RequestInit = {}) {
-      return fetch(path, options)
+    function applyAccessStatus(status: AccessStatus) {
+      accessUnlocked.value = Boolean(status.unlocked)
+      demoConversationId.value = status.demoConversationId || ''
+      remainingMessages.value = Math.max(0, Number(status.remainingMessages) || 0)
+      publicMessageLimit.value = Math.max(0, Number(status.messageLimit) || 0)
     }
 
     /**
-     * 从错误响应中提取后端消息，无法解析时返回默认文本。
+     * 打开访问密钥弹窗，并在渲染完成后聚焦输入框。
+     *
+     * @param message 可选的权限或额度提示
+     * @returns 输入框完成聚焦后的 Promise
+     */
+    async function openAccessModal(message = '') {
+      accessModalOpen.value = true
+      accessError.value = message
+      await nextTick()
+      accessKeyInput.value?.focus()
+      accessKeyInput.value?.select()
+    }
+
+    /**
+     * 关闭访问密钥弹窗并清空明文密钥。
+     *
+     * @returns 无返回值
+     */
+    function closeAccessModal() {
+      if (unlockingAccess.value) {
+        return
+      }
+      accessModalOpen.value = false
+      accessKey.value = ''
+      accessError.value = ''
+    }
+
+    /**
+     * 从后端加载当前浏览器的解锁状态和公开体验剩余次数。
+     *
+     * @returns 状态加载结束后的 Promise
+     */
+    async function loadAccessStatus() {
+      const response = await request('/api/access/status')
+      if (!response.ok) {
+        return
+      }
+      applyAccessStatus(await response.json() as AccessStatus)
+    }
+
+    /**
+     * 提交唯一访问密钥，成功后刷新模型提供商和全部操作权限。
+     *
+     * @returns 密钥验证结束后的 Promise
+     */
+    async function unlockAccess() {
+      if (!accessKey.value.trim() || unlockingAccess.value) {
+        return
+      }
+      unlockingAccess.value = true
+      accessError.value = ''
+      try {
+        const response = await request('/api/access/unlock', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: accessKey.value })
+        })
+        if (!response.ok) {
+          accessError.value = await errorOf(response, '访问密钥验证失败')
+          return
+        }
+        applyAccessStatus(await response.json() as AccessStatus)
+        accessModalOpen.value = false
+        accessKey.value = ''
+        await loadProviders()
+      } catch {
+        accessError.value = '网络连接失败，请确认后端服务正在运行'
+      } finally {
+        unlockingAccess.value = false
+      }
+    }
+
+    /**
+     * 删除当前浏览器的访问凭证并恢复公开只读模式。
+     *
+     * @returns 重新锁定结束后的 Promise
+     */
+    async function lockAccess() {
+      const response = await request('/api/access/unlock', { method: 'DELETE' })
+      if (!response.ok) {
+        chatError.value = await errorOf(response, '重新锁定失败')
+        return
+      }
+      accessUnlocked.value = false
+      providerMenuOpen.value = false
+      await loadAccessStatus()
+      await loadProviders()
+    }
+
+    /**
+     * 调用后端接口并自动携带 HttpOnly 访问凭证，权限不足时打开密钥弹窗。
+     *
+     * @param path 后端接口路径
+     * @param options fetch 请求配置
+     * @returns 后端原始响应对象
+     */
+    async function request(path: string, options: RequestInit = {}) {
+      const response = await fetch(path, { credentials: 'same-origin', ...options })
+      if (response.status === 403) {
+        try {
+          const body = await response.clone().json()
+          if (['KEY_REQUIRED', 'PUBLIC_QUOTA_EXHAUSTED', 'PUBLIC_RATE_LIMITED'].includes(body.code)) {
+            await openAccessModal(body.message || '请输入访问密钥后继续')
+          }
+        } catch {
+          // 非 JSON 权限响应交由具体业务使用默认错误提示处理。
+        }
+      }
+      return response
+    }
+
+    /**
+     * 从错误响应中提取后端消息，权限错误已由密钥弹窗处理时返回空文本。
      *
      * @param response 后端错误响应
      * @param fallback 默认错误文本
@@ -190,7 +399,11 @@ const App = {
      */
     async function errorOf(response: Response, fallback: string) {
       try {
-        return (await response.json()).message || fallback
+        const body = await response.json()
+        if (['KEY_REQUIRED', 'PUBLIC_QUOTA_EXHAUSTED', 'PUBLIC_RATE_LIMITED'].includes(body.code)) {
+          return ''
+        }
+        return body.message || fallback
       } catch {
         return fallback
       }
@@ -221,6 +434,10 @@ const App = {
      * @param name 目标提供商名称
      */
     async function switchProvider(name: string) {
+      if (!accessUnlocked.value) {
+        await openAccessModal('切换模型需要先输入访问密钥')
+        return
+      }
       if (switchingProvider.value || name === activeProviderName.value) {
         return
       }
@@ -241,13 +458,37 @@ const App = {
     }
 
     /**
-     * 下拉框选择模型时触发，提取选中值后切换提供商。
-     *
-     * @param event select 元素的 change 事件
+     * 展开或收起模型选择菜单；切换请求执行期间保持菜单关闭。
      */
-    function onProviderChange(event: Event) {
-      const target = event.target as HTMLSelectElement
-      switchProvider(target.value)
+    function toggleProviderMenu() {
+      if (!accessUnlocked.value) {
+        void openAccessModal('切换模型需要先输入访问密钥')
+        return
+      }
+      if (switchingProvider.value) {
+        return
+      }
+      providerMenuOpen.value = !providerMenuOpen.value
+    }
+
+    /**
+     * 收起模型选择菜单，不改变当前激活的模型。
+     */
+    function closeProviderMenu() {
+      providerMenuOpen.value = false
+    }
+
+    /**
+     * 从自定义圆角菜单选择可用模型，并复用原有后端切换接口。
+     *
+     * @param provider 用户选择的模型提供商
+     */
+    async function selectProvider(provider: ProviderInfo) {
+      if (!provider.enabled || !provider.configured) {
+        return
+      }
+      closeProviderMenu()
+      await switchProvider(provider.name)
     }
 
     /**
@@ -265,6 +506,7 @@ const App = {
      *
      * @param event 文件选择框的 change 事件
      */
+
     function chooseFile(event: Event) {
       file.value = (event.target as HTMLInputElement).files?.[0] || null
     }
@@ -273,6 +515,10 @@ const App = {
      * 上传资料文件并请求后端解析为可供小C参考的知识库切片。
      */
     async function upload() {
+      if (!accessUnlocked.value) {
+        await openAccessModal('上传资料需要先输入访问密钥')
+        return
+      }
       if (!file.value) {
         return
       }
@@ -290,6 +536,7 @@ const App = {
         archiveMessage.value = await errorOf(response, '资料上传失败')
         return
       }
+
       file.value = null
       title.value = ''
       archiveMessage.value = '资料已归档，后台正在解析并生成可引用内容。'
@@ -299,9 +546,14 @@ const App = {
     /**
      * 删除指定资料及其已生成的知识库切片。
      *
+
      * @param id 待删除文档主键
      */
     async function removeDocument(id: string) {
+      if (!accessUnlocked.value) {
+        await openAccessModal('删除资料需要先输入访问密钥')
+        return
+      }
       const document = documents.value.find(item => item.id === id)
       if (!document) {
         return
@@ -315,6 +567,10 @@ const App = {
      * @param id 待重建索引的文档主键
      */
     async function reindexDocument(id: string) {
+      if (!accessUnlocked.value) {
+        await openAccessModal('重新索引资料需要先输入访问密钥')
+        return
+      }
       const response = await request(`/api/documents/${id}/reindex`, { method: 'POST' })
       archiveMessage.value = response.ok
         ? '已加入处理队列，稍后刷新查看处理进度。'
@@ -328,6 +584,7 @@ const App = {
      * 将输入转为不受空格和大小写影响的启动口令。
      *
      * @param value 用户输入内容
+
      * @returns 规范化后的输入内容
      */
     function normalizeCommand(value: string) {
@@ -348,9 +605,13 @@ const App = {
      * 创建数据库会话，并将其切换为当前对话。
      */
     async function startNewChat() {
+      if (!accessUnlocked.value) {
+        await openAccessModal('创建会话需要先输入访问密钥')
+        return
+      }
       const response = await request('/api/conversations', { method: 'POST' })
       if (!response.ok) {
-        chatError.value = await errorOf(response, '创建新会话失败')
+        chatError.value = await errorOf(response, '加载会话失败')
         return
       }
       const conversation = await response.json() as Conversation
@@ -358,12 +619,14 @@ const App = {
       await selectConversation(conversation)
     }
 
+
     /**
      * 切换到指定历史会话，并从后端加载其完整消息记录。
      *
      * @param conversation 待打开的历史会话
      */
     async function selectConversation(conversation: Conversation) {
+
       const response = await request(`/api/conversations/${conversation.id}/messages`)
       if (!response.ok) {
         chatError.value = await errorOf(response, '加载会话记录失败')
@@ -382,7 +645,92 @@ const App = {
      * @param conversation 待删除的历史会话
      */
     async function deleteConversation(conversation: Conversation) {
+      if (!accessUnlocked.value) {
+        await openAccessModal('删除会话需要先输入访问密钥')
+        return
+      }
       pendingDelete.value = { kind: 'conversation', id: conversation.id, title: conversation.title }
+    }
+
+    /**
+     * 打开会话名称编辑弹窗，并选中原名称方便直接覆盖输入。
+     *
+
+     * @param conversation 待重命名的历史会话
+     * @returns 输入框完成聚焦后的 Promise
+     */
+    async function openRenameConversation(conversation: Conversation) {
+      if (!accessUnlocked.value) {
+        await openAccessModal('编辑会话名称需要先输入访问密钥')
+        return
+      }
+      editingConversation.value = conversation
+      conversationTitleDraft.value = conversation.title
+      renameConversationError.value = ''
+      await nextTick()
+      renameInput.value?.focus()
+      renameInput.value?.select()
+    }
+
+    /**
+     * 关闭会话名称编辑弹窗并清空临时输入。
+     *
+     * @returns 无返回值
+     */
+    function closeRenameConversationModal() {
+      if (renamingConversation.value) {
+        return
+      }
+      editingConversation.value = null
+      conversationTitleDraft.value = ''
+      renameConversationError.value = ''
+    }
+
+    /**
+     * 校验并提交新会话名称，成功后同步历史列表及当前会话标题。
+     *
+     * @returns 重命名请求结束后的 Promise
+     */
+    async function confirmRenameConversation() {
+      if (!accessUnlocked.value) {
+        await openAccessModal('编辑会话名称需要先输入访问密钥')
+        return
+      }
+      const target = editingConversation.value
+      const nextTitle = conversationTitleDraft.value.trim()
+      if (!target || renamingConversation.value) {
+        return
+      }
+      if (!nextTitle) {
+        renameConversationError.value = '请输入会话名称'
+        return
+      }
+      if (nextTitle.length > 60) {
+        renameConversationError.value = '会话名称不能超过 60 个字符'
+        return
+      }
+
+      renamingConversation.value = true
+      renameConversationError.value = ''
+      try {
+        const response = await request(`/api/conversations/${target.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: nextTitle })
+        })
+        if (!response.ok) {
+          renameConversationError.value = await errorOf(response, '修改会话名称失败')
+          return
+        }
+        const updatedConversation: Conversation = await response.json()
+        conversations.value = conversations.value.map(item => item.id === updatedConversation.id ? updatedConversation : item)
+        editingConversation.value = null
+        conversationTitleDraft.value = ''
+      } catch {
+        renameConversationError.value = '网络连接失败，请确认后端服务正在运行'
+      } finally {
+        renamingConversation.value = false
+      }
     }
 
     /**
@@ -398,6 +746,10 @@ const App = {
      * 根据弹窗中暂存的对象执行会话或资料删除，并在完成后同步页面数据。
      */
     async function confirmDelete() {
+      if (!accessUnlocked.value) {
+        await openAccessModal('删除操作需要先输入访问密钥')
+        return
+      }
       const target = pendingDelete.value
       if (!target || deleting.value) {
         return
@@ -596,6 +948,7 @@ const App = {
      *
      * @param messageId 目标消息主键
      */
+
     function scrollToMessage(messageId: string) {
       const target = messageElements.get(messageId)
       if (!target || !messageList.value) {
@@ -636,6 +989,13 @@ const App = {
      * 提交启动口令或问题；默认使用本地资料模式，启动小C后才请求大模型。
      */
     async function send() {
+      if (!canSendMessage.value) {
+        const message = publicQuotaExhausted.value
+          ? '公开体验次数已用完，请输入访问密钥继续'
+          : '该会话为只读内容，输入访问密钥后才能提问'
+        await openAccessModal(message)
+        return
+      }
       const content = question.value.trim()
       if (!content || asking.value) {
         return
@@ -677,6 +1037,10 @@ const App = {
         }
         npcStarted.value = Boolean(body.conversation.npcStarted)
         conversations.value = [body.conversation, ...conversations.value.filter(item => item.id !== body.conversation.id)]
+        if (!accessUnlocked.value) {
+          // 公开回答成功后从服务器刷新剩余次数，避免前端自行计数被绕过。
+          await loadAccessStatus()
+        }
         const latestAssistantMessage = [...body.messages].reverse().find((message: ChatMessage) => message.role === 'assistant')
         if (shouldAutoFollowLatest.value && latestAssistantMessage) {
           await scrollToAnswerStart(latestAssistantMessage.id)
@@ -692,12 +1056,16 @@ const App = {
      * 页面初次打开时加载资料归档，不会触发任何模型调用。
      */
     onMounted(async () => {
+      await loadAccessStatus()
       await loadProviders()
       await loadConversations()
-      if (conversations.value.length) {
-        await selectConversation(conversations.value[0])
-      } else {
-        startNewChat()
+      const preferredConversation = !accessUnlocked.value
+        ? conversations.value.find(item => item.id === demoConversationId.value) || conversations.value[0]
+        : conversations.value[0]
+      if (preferredConversation) {
+        await selectConversation(preferredConversation)
+      } else if (accessUnlocked.value) {
+        await startNewChat()
       }
       await refreshDocuments()
     })
@@ -722,12 +1090,13 @@ const App = {
       documents,
       file,
       loadProviders,
-      onProviderChange,
+      closeProviderMenu,
       messageList,
       messages,
       npcStarted,
       pendingDelete,
       providers,
+      providerMenuOpen,
       question,
       refreshDocuments,
       handleMessageListScroll,
@@ -736,11 +1105,13 @@ const App = {
       removeDocument,
       send,
       selectConversation,
+      selectProvider,
       scrollToMessage,
       startNewChat,
       switchingProvider,
       switchProvider,
       title,
+      toggleProviderMenu,
       questionPreview,
       activePromptId,
       conversationNavigatorPinned,
@@ -757,32 +1128,102 @@ const App = {
       upload,
       uploading,
       deleting,
+      editingConversation,
+      conversationTitleDraft,
+      renamingConversation,
+      renameConversationError,
+      renameInput,
+      openRenameConversation,
+      closeRenameConversationModal,
+      confirmRenameConversation,
+      accessUnlocked,
+      demoConversationId,
+      remainingMessages,
+      publicMessageLimit,
+      accessModalOpen,
+      accessKey,
+      accessError,
+      unlockingAccess,
+      accessKeyInput,
+      isPublicDemoConversation,
+      publicQuotaExhausted,
+      canSendMessage,
+      effectiveNpcStarted,
+      openAccessModal,
+      closeAccessModal,
+      unlockAccess,
+      lockAccess,
       userMessages
     }
   },
   template: `
-    <div class="app-shell">
+    <div class="app-shell" @click="closeProviderMenu">
       <aside class="left-sidebar">
         <a class="brand" href="#">
           <span class="brand-mark">C</span>
           <span><strong>小C · NPC</strong><small>KNOWLEDGE ASSISTANT</small></span>
         </a>
-        <button class="new-chat" @click="startNewChat">＋ 新对话</button>
+        <button class="new-chat" :class="{ locked: !accessUnlocked }" @click="startNewChat">{{ accessUnlocked ? '＋ 新对话' : '🔒 新对话' }}</button>
+        <section class="access-card" :class="{ unlocked: accessUnlocked }">
+          <div><span class="access-card-dot"></span><strong>{{ accessUnlocked ? '全部操作已解锁' : '公开体验模式' }}</strong></div>
+          <small>{{ accessUnlocked ? '会话、资料和模型均可管理' : '仅测试会话可提问，其他内容只读' }}</small>
+          <button v-if="accessUnlocked" type="button" @click="lockAccess">重新锁定</button>
+          <button v-else type="button" @click="openAccessModal()">输入访问密钥</button>
+        </section>
         <section class="conversation-history">
           <p class="side-title">历史会话</p>
-          <div v-for="conversation in conversations" :key="conversation.id" class="history-row" :class="{ active: conversation.id === currentConversationId }">
-            <button class="history-item" @click="selectConversation(conversation)"><span>◎</span>{{ conversation.title }}</button>
-            <button class="history-delete" title="删除会话" @click="deleteConversation(conversation)">×</button>
+          <div v-for="conversation in conversations" :key="conversation.id" class="history-row" :class="{ active: conversation.id === currentConversationId, demo: conversation.id === demoConversationId }">
+            <button class="history-item" @click="selectConversation(conversation)">
+              <span class="history-icon">◎</span><span class="history-title">{{ conversation.title }}</span><small v-if="conversation.id === demoConversationId" class="history-demo-badge">测试</small>
+            </button>
+            <div class="history-actions">
+              <button class="history-edit" title="编辑会话名称" aria-label="编辑会话名称" @click.stop="openRenameConversation(conversation)">✎</button>
+              <button class="history-delete" title="删除会话" aria-label="删除会话" @click.stop="deleteConversation(conversation)">×</button>
+            </div>
           </div>
         </section>
-        <div class="sidebar-footer"><span class="status-dot" :class="{ active: npcStarted }"></span><span class="status-label">{{ npcStarted ? activeProviderDisplayName + ' 增强模式已启用' : '本地资料模式运行中' }}</span><select v-if="providers.length > 1" class="provider-select" :value="activeProviderName" :disabled="switchingProvider" @change="onProviderChange"><option v-for="provider in providers" :key="provider.name" :value="provider.name" :disabled="!provider.enabled || !provider.configured">{{ provider.displayName }}{{ (!provider.enabled || !provider.configured) ? '（未配置）' : '' }}</option></select></div>
+        <div class="sidebar-footer">
+          <span class="status-dot" :class="{ active: effectiveNpcStarted }"></span>
+          <span class="status-label">{{ effectiveNpcStarted ? activeProviderDisplayName + (accessUnlocked ? ' 增强模式已启用' : ' 公开体验') : '本地资料模式运行中' }}</span>
+          <div v-if="providers.length > 1" class="provider-picker" :class="{ open: providerMenuOpen }" @click.stop @keydown.esc="closeProviderMenu">
+            <button
+              type="button"
+              class="provider-trigger"
+              :class="{ locked: !accessUnlocked }"
+              :disabled="switchingProvider"
+              aria-haspopup="listbox"
+              :aria-expanded="providerMenuOpen"
+              @click="toggleProviderMenu"
+            >
+              <span class="provider-trigger-label">{{ activeProviderDisplayName }}</span>
+              <span class="provider-chevron" aria-hidden="true">{{ accessUnlocked ? '⌄' : '🔒' }}</span>
+            </button>
+            <div v-if="providerMenuOpen && accessUnlocked" class="provider-menu" role="listbox" aria-label="选择对话模型">
+              <button
+                v-for="provider in providers"
+                :key="provider.name"
+                type="button"
+                role="option"
+                class="provider-option"
+                :class="{ active: provider.name === activeProviderName }"
+                :aria-selected="provider.name === activeProviderName"
+                :disabled="!provider.enabled || !provider.configured"
+                @click="selectProvider(provider)"
+              >
+                <span>{{ provider.displayName }}</span>
+                <small v-if="provider.name === activeProviderName">当前</small>
+                <small v-else-if="!provider.enabled || !provider.configured">未配置</small>
+              </button>
+            </div>
+          </div>
+        </div>
       </aside>
 
       <main class="chat-main">
-        <header class="chat-header"><div><strong>{{ currentConversationTitle }}</strong><small>小C · {{ npcStarted ? activeProviderDisplayName + ' 增强回答' : '本地资料模式' }}</small></div><span>{{ npcStarted ? activeProviderDisplayName + ' 已启用' : '本地资料模式' }}</span></header>
+        <header class="chat-header"><div><strong>{{ currentConversationTitle }}</strong><small>小C · {{ effectiveNpcStarted ? activeProviderDisplayName + ' 增强回答' : '本地资料模式' }}</small></div><span class="chat-access-badge" :class="{ locked: !accessUnlocked }">{{ accessUnlocked ? (effectiveNpcStarted ? activeProviderDisplayName + ' 已启用' : '本地资料模式') : (isPublicDemoConversation ? '公开测试 · 剩余 ' + remainingMessages + ' 次' : '只读会话') }}</span></header>
         <section ref="messageList" class="message-list" @click="releaseConversationNavigator" @scroll="handleMessageListScroll">
           <article v-for="message in messages" :key="message.id" :ref="element => registerMessageElement(message.id, element)" class="message" :class="message.role">
-            <div class="avatar">{{ message.role === 'assistant' ? 'C' : message.role === 'user' ? '我' : '!' }}</div>
+            <div class="avatar">{{ message.role === 'assistant' ? 'C' : message.role === 'user' ? '我' : '✦' }}</div>
             <div class="message-body"><p>{{ message.content }}</p>
               <details v-for="citation in message.citations" :key="citation.documentId + citation.chunkNo" class="citation"><summary>{{ citation.documentTitle }} · 切片 {{ citation.chunkNo }}</summary><p>{{ citation.excerpt }}</p></details>
             </div>
@@ -797,20 +1238,77 @@ const App = {
             <button v-for="message in userMessages" :key="'preview-' + message.id" class="navigator-preview-item" :class="{ active: message.id === activePromptId }" @click="selectPromptFromNavigator(message.id)">{{ questionPreview(message.content) }}</button>
           </div>
         </nav>
-        <div class="composer"><textarea v-model="question" @keydown.enter.exact.prevent="send" :placeholder="composerPlaceholder"></textarea><button :disabled="asking || !question.trim()" @click="send">发送 ↑</button><small>{{ composerHint }}</small></div>
+        <div class="composer" :class="{ locked: !canSendMessage }">
+          <textarea v-model="question" :disabled="!canSendMessage" @keydown.enter.exact.prevent="send" :placeholder="composerPlaceholder"></textarea>
+          <button :disabled="asking || (canSendMessage && !question.trim())" @click="send">{{ canSendMessage ? '发送 ↑' : '输入密钥' }}</button>
+          <small>{{ composerHint }}</small>
+        </div>
       </main>
 
       <aside class="archive-sidebar">
         <header><div><p class="side-title">资料归档</p><strong>{{ documents.length }} 份资料</strong></div><button class="icon-button" @click="refreshDocuments">↻</button></header>
-        <section class="upload-box"><label><span>资料标题（可选）</span><input v-model="title" placeholder="给资料取个名称"></label><label class="file-input"><input type="file" accept=".md,.markdown,.txt,.pdf,.docx" @change="chooseFile"><b>{{ file ? file.name : '＋ 选择资料文件' }}</b><small>支持 Markdown、TXT、PDF、Word</small></label><button class="upload-button" :disabled="!file || uploading" @click="upload">{{ uploading ? '正在归档…' : '上传并解析' }}</button><p v-if="archiveMessage" class="archive-message">{{ archiveMessage }}</p></section>
-        <ul class="archive-list"><li v-for="doc in documents" :key="doc.id"><span class="file-badge">{{ doc.fileType.toUpperCase() }}</span><div><strong>{{ doc.title }}</strong><small>原始文件：{{ doc.originalFilename }}</small><em :class="doc.status.toLowerCase()">{{ documentStatusText(doc.status) }}</em><small v-if="doc.failureReason" class="failure">{{ doc.failureReason }}</small></div><div class="archive-actions"><button class="reindex-button" title="重新生成 BGE-M3 向量" @click="reindexDocument(doc.id)">↻</button><button class="delete-button" title="删除资料" @click="removeDocument(doc.id)">×</button></div></li><li v-if="!documents.length" class="empty-archive">还没有资料，先上传一份文件吧。</li></ul>
+        <section class="upload-box" :class="{ locked: !accessUnlocked }">
+          <div v-if="!accessUnlocked" class="locked-operation">
+            <span>🔒</span><strong>资料管理已锁定</strong><small>上传、重新索引和删除资料都需要访问密钥。</small>
+            <button type="button" @click="openAccessModal('资料管理需要先输入访问密钥')">输入访问密钥</button>
+          </div>
+          <template v-else>
+            <label><span>资料标题（可选）</span><input v-model="title" placeholder="给资料取个名称"></label>
+            <label class="file-input"><input type="file" accept=".md,.markdown,.txt,.pdf,.docx" @change="chooseFile"><b>{{ file ? file.name : '＋ 选择资料文件' }}</b><small>支持 Markdown、TXT、PDF、Word</small></label>
+            <button class="upload-button" :disabled="!file || uploading" @click="upload">{{ uploading ? '正在归档…' : '上传并解析' }}</button>
+            <p v-if="archiveMessage" class="archive-message">{{ archiveMessage }}</p>
+          </template>
+        </section>
+        <ul class="archive-list"><li v-for="doc in documents" :key="doc.id"><span class="file-badge">{{ doc.fileType.toUpperCase() }}</span><div><strong>{{ doc.title }}</strong><small>原始文件：{{ doc.originalFilename }}</small><em :class="doc.status.toLowerCase()">{{ documentStatusText(doc.status) }}</em><small v-if="doc.failureReason" class="failure">{{ doc.failureReason }}</small></div><div class="archive-actions" :class="{ locked: !accessUnlocked }"><button class="reindex-button" :title="accessUnlocked ? '重新生成 BGE-M3 向量' : '输入密钥后重新索引'" @click="reindexDocument(doc.id)">{{ accessUnlocked ? '↻' : '🔒' }}</button><button class="delete-button" :title="accessUnlocked ? '删除资料' : '输入密钥后删除'" @click="removeDocument(doc.id)">{{ accessUnlocked ? '×' : '🔒' }}</button></div></li><li v-if="!documents.length" class="empty-archive">还没有资料，先上传一份文件吧。</li></ul>
       </aside>
+      <div v-if="accessModalOpen" class="access-modal-backdrop" @click.self="closeAccessModal">
+        <section class="access-modal" role="dialog" aria-modal="true" aria-labelledby="access-modal-title" @keydown.esc="closeAccessModal">
+          <header class="access-modal-heading">
+            <span class="access-modal-icon">🔐</span>
+            <div><p>OWNER ACCESS</p><h2 id="access-modal-title">输入访问密钥</h2></div>
+            <button type="button" :disabled="unlockingAccess" aria-label="关闭密钥弹窗" @click="closeAccessModal">×</button>
+          </header>
+          <p class="access-modal-copy">验证成功后将解锁会话管理、资料管理和模型切换，24 小时内无需重复输入。</p>
+          <form @submit.prevent="unlockAccess">
+            <label><span>唯一访问密钥</span><input ref="accessKeyInput" v-model="accessKey" type="password" maxlength="128" autocomplete="current-password" placeholder="请输入访问密钥" @input="accessError = ''"></label>
+            <p v-if="accessError" class="access-modal-error" role="alert">{{ accessError }}</p>
+            <p class="access-modal-security">密钥仅发送给后端验证，不会保存在前端代码或浏览器存储中。</p>
+            <div class="access-modal-actions">
+              <button class="access-modal-cancel" type="button" :disabled="unlockingAccess" @click="closeAccessModal">取消</button>
+              <button class="access-modal-confirm" type="submit" :disabled="unlockingAccess || !accessKey.trim()">{{ unlockingAccess ? '正在验证…' : '验证并解锁' }}</button>
+            </div>
+          </form>
+        </section>
+      </div>
       <div v-if="chatError" class="error-modal-backdrop" @click.self="closeChatError">
         <section class="error-modal" role="alertdialog" aria-modal="true" aria-labelledby="error-modal-title">
           <span class="error-modal-icon">!</span>
-          <h2 id="error-modal-title">操作未完成</h2>
+          <h2 id="error-modal-title">网络挂掉了（qvq）</h2>
           <p>{{ chatError }}</p>
           <button @click="closeChatError">我知道了</button>
+        </section>
+      </div>
+      <div v-if="editingConversation" class="rename-modal-backdrop" @click.self="closeRenameConversationModal">
+        <section class="rename-modal" role="dialog" aria-modal="true" aria-labelledby="rename-modal-title" @keydown.esc="closeRenameConversationModal">
+          <header class="rename-modal-heading">
+            <div><p class="rename-modal-eyebrow">整理会话</p><h2 id="rename-modal-title">编辑会话名称</h2></div>
+            <button class="rename-modal-close" type="button" :disabled="renamingConversation" aria-label="关闭名称编辑弹窗" @click="closeRenameConversationModal">×</button>
+          </header>
+          <p class="rename-modal-copy">用一个容易辨认的名称标记这段会话。</p>
+          <form @submit.prevent="confirmRenameConversation">
+            <label class="rename-modal-field">
+              <span>会话名称</span>
+              <input ref="renameInput" v-model="conversationTitleDraft" maxlength="60" autocomplete="off" placeholder="请输入会话名称" @input="renameConversationError = ''">
+            </label>
+            <div class="rename-modal-meta">
+              <span v-if="renameConversationError" class="rename-modal-error" role="alert">{{ renameConversationError }}</span>
+              <span class="rename-modal-counter">{{ conversationTitleDraft.length }}/60</span>
+            </div>
+            <div class="rename-modal-actions">
+              <button class="rename-modal-cancel" type="button" :disabled="renamingConversation" @click="closeRenameConversationModal">取消</button>
+              <button class="rename-modal-confirm" type="submit" :disabled="renamingConversation || !conversationTitleDraft.trim()">{{ renamingConversation ? '正在保存…' : '保存名称' }}</button>
+            </div>
+          </form>
         </section>
       </div>
       <div v-if="pendingDelete" class="delete-modal-backdrop" @click.self="closeDeleteModal">

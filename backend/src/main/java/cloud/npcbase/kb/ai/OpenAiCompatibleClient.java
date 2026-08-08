@@ -78,7 +78,7 @@ public class OpenAiCompatibleClient {
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
         String configuredActive = properties.getChat().getActiveProvider();
-        this.activeProvider = hasText(configuredActive) ? configuredActive : "deepseek";
+        this.activeProvider = hasText(configuredActive) ? configuredActive : "zhipu";
     }
 
     /**
@@ -119,15 +119,27 @@ public class OpenAiCompatibleClient {
      * @return 对话模型生成的回答文本
      */
     public String chat(String systemPrompt, String userPrompt) {
-        validateChatEnabled();
-        ChatProviderProperties provider = requireActiveProviderConfig();
+        return chat(activeProvider, systemPrompt, userPrompt);
+    }
+
+    /**
+     * 使用指定对话模型提供商，根据系统提示词和用户上下文生成回答。
+     *
+     * @param providerName 对话模型提供商标准名称
+     * @param systemPrompt 约束小C角色与回答范围的系统提示词
+     * @param userPrompt 用户问题及检索出的知识库上下文
+     * @return 对话模型生成的回答文本
+     */
+    public String chat(String providerName, String systemPrompt, String userPrompt) {
+        ChatProviderProperties provider = requireProviderConfig(providerName);
+        validateProviderEnabled(providerName, provider);
         List<Map<String, String>> messages = List.of(
                 Map.of("role", "system", "content", systemPrompt),
                 Map.of("role", "user", "content", userPrompt));
         Map<String, Object> requestBody = Map.of("model", requireValue(provider.getModel(), "KB_CHAT_PROVIDERS_*_MODEL"),
                 "temperature", 0.2,
                 "messages", messages);
-        // 仅在小C已被启动后由上层服务调用对话模型生成自然语言回答。
+        // 仅在上层服务确认权限和模式后调用指定对话模型生成自然语言回答。
         JsonNode response = post(provider.getBaseUrl(), provider.getApiKey(), "chat/completions", requestBody);
         String answer = response.path("choices").path(0).path("message").path("content").asText();
         if (answer == null || answer.trim().isEmpty()) {
@@ -142,7 +154,17 @@ public class OpenAiCompatibleClient {
      * @return 对话模型可调用时返回 true
      */
     public boolean chatEnabled() {
-        ChatProviderProperties provider = getActiveProviderConfig();
+        return chatEnabled(activeProvider);
+    }
+
+    /**
+     * 判断指定对话模型提供商是否完成启用和基础模型配置。
+     *
+     * @param providerName 对话模型提供商标准名称
+     * @return 指定提供商可调用时返回 true
+     */
+    public boolean chatEnabled(String providerName) {
+        ChatProviderProperties provider = getProviderConfig(providerName);
         return provider != null && provider.isEnabled() && isProviderConfigured(provider);
     }
 
@@ -414,11 +436,21 @@ public class OpenAiCompatibleClient {
      * @return 当前激活提供商的配置对象
      */
     private ChatProviderProperties getActiveProviderConfig() {
+        return getProviderConfig(activeProvider);
+    }
+
+    /**
+     * 返回指定提供商的配置，未找到时返回 null。
+     *
+     * @param providerName 提供商标准名称
+     * @return 指定提供商配置；未找到时返回 null
+     */
+    private ChatProviderProperties getProviderConfig(String providerName) {
         Map<String, ChatProviderProperties> providers = properties.getChat().getProviders();
-        if (providers == null || providers.isEmpty()) {
+        if (providers == null || providers.isEmpty() || !hasText(providerName)) {
             return null;
         }
-        return providers.get(activeProvider);
+        return providers.get(providerName);
     }
 
     /**
@@ -428,11 +460,35 @@ public class OpenAiCompatibleClient {
      * @throws IllegalStateException 当激活提供商未配置时抛出
      */
     private ChatProviderProperties requireActiveProviderConfig() {
-        ChatProviderProperties provider = getActiveProviderConfig();
+        return requireProviderConfig(activeProvider);
+    }
+
+    /**
+     * 返回指定提供商的配置，未找到时抛出异常。
+     *
+     * @param providerName 提供商标准名称
+     * @return 指定提供商配置
+     * @throws IllegalStateException 当提供商未配置时抛出
+     */
+    private ChatProviderProperties requireProviderConfig(String providerName) {
+        ChatProviderProperties provider = getProviderConfig(providerName);
         if (provider == null) {
-            throw new IllegalStateException("当前激活的对话模型提供商 " + activeProvider + " 未配置");
+            throw new IllegalStateException("对话模型提供商 " + providerName + " 未配置");
         }
         return provider;
+    }
+
+    /**
+     * 校验指定提供商已经启用并完成基础配置。
+     *
+     * @param providerName 提供商标准名称
+     * @param provider 提供商配置
+     * @throws IllegalStateException 当提供商未启用或配置不完整时抛出
+     */
+    private void validateProviderEnabled(String providerName, ChatProviderProperties provider) {
+        if (!provider.isEnabled() || !isProviderConfigured(provider)) {
+            throw new IllegalStateException("请配置并启用对话模型提供商（" + getProviderDisplayName(providerName) + "）");
+        }
     }
 
     /**
@@ -451,7 +507,7 @@ public class OpenAiCompatibleClient {
      * @param name 提供商标准名称
      * @return 面向用户展示的名称
      */
-    private String getProviderDisplayName(String name) {
+    public String getProviderDisplayName(String name) {
         if (!hasText(name)) {
             return "大模型";
         }

@@ -81,6 +81,9 @@ public class ApiRequestResponseLoggingFilter extends OncePerRequestFilter {
      * @return 请求体字符串
      */
     private String getRequestBody(ContentCachingRequestWrapper requestWrapper) {
+        if ("/api/access/unlock".equals(requestWrapper.getRequestURI())) {
+            return "[REDACTED]";
+        }
         return new String(requestWrapper.getContentAsByteArray(), getCharset(requestWrapper.getCharacterEncoding()));
     }
 

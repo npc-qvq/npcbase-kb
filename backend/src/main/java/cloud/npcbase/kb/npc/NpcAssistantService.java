@@ -124,6 +124,27 @@ public class NpcAssistantService {
         return new NpcActivationResponse(true, "小C 已启动（" + displayName + "），现在可以基于知识库资料回答问题。",
                 aiClient.getActiveProvider());
     }
+    /**
+     * 使用服务器指定的提供商校验并启动公开体验，不允许口令切换模型。
+     *
+     * @param command 用户输入的启动口令
+     * @param providerName 服务器指定的公开模型提供商
+     * @return 小C启动处理结果
+     */
+    public NpcActivationResponse activateWithProvider(String command, String providerName) {
+        String normalized = normalizeCommand(command);
+        if (!isActivationCommand(normalized)) {
+            return new NpcActivationResponse(false, "请输入“小c启动”后再调用小C。", providerName);
+        }
+        String displayName = aiClient.getProviderDisplayName(providerName);
+        if (!aiClient.chatEnabled(providerName)) {
+            return new NpcActivationResponse(false, displayName + " 对话服务尚未配置完成，当前仍可使用资料检索模式。",
+                    providerName);
+        }
+        return new NpcActivationResponse(true, "小C 已启动（" + displayName + "），现在可以基于知识库资料回答问题。",
+                providerName);
+    }
+
 
     /**
      * 返回当前服务进程中小C是否已经启动。
@@ -170,11 +191,28 @@ public class NpcAssistantService {
      */
     public NpcChatResponse chat(NpcChatRequest request) {
         validateActive();
+        return chatWithProvider(request, aiClient.getActiveProvider());
+    }
+
+    /**
+     * 使用指定模型提供商回答问题，不读取或修改全局激活提供商。
+     *
+     * @param request 小C对话请求
+     * @param providerName 强制使用的模型提供商标准名称
+     * @return 小C回答和关联资料来源
+     * @throws IllegalArgumentException 当问题为空时抛出
+     * @throws IllegalStateException 当指定模型未配置时抛出
+     */
+    public NpcChatResponse chatWithProvider(NpcChatRequest request, String providerName) {
         String question = request == null ? null : request.question();
         validateQuestion(question);
+        if (!aiClient.chatEnabled(providerName)) {
+            throw new IllegalStateException("公开体验模型 " + aiClient.getProviderDisplayName(providerName) + " 尚未配置完成");
+        }
         List<DocumentChunk> chunks = findRelevantChunks(question);
         List<NpcCitation> citations = createCitations(chunks);
-        String answer = aiClient.chat(buildSystemPrompt(request.assistantPrompt()), buildUserPrompt(question, chunks, citations));
+        String answer = aiClient.chat(providerName, buildSystemPrompt(request.assistantPrompt(), providerName),
+                buildUserPrompt(question, chunks, citations));
         return new NpcChatResponse(answer, citations);
     }
 
@@ -404,12 +442,13 @@ public class NpcAssistantService {
     }
 
     /**
-     * 根据当前激活的对话模型动态生成默认角色提示词。
+     * 根据指定对话模型动态生成默认角色提示词。
      *
-     * @return 包含当前模型名称的系统提示词
+     * @param providerName 对话模型提供商标准名称
+     * @return 包含指定模型名称的系统提示词
      */
-    private String buildDefaultSystemPrompt() {
-        String displayName = aiClient.getActiveProviderDisplayName();
+    private String buildDefaultSystemPrompt(String providerName) {
+        String displayName = aiClient.getProviderDisplayName(providerName);
         return "你叫小C，是 NPC 的个人知识库助手，使用 " + displayName + " 模型提供回答。"
                 + "请优先依据下方提供的资料回答，不能从资料中确定时要明确说明。回答使用中文，表达清晰、友好、简洁。";
     }
@@ -418,10 +457,11 @@ public class NpcAssistantService {
      * 组合默认角色提示词和用户在页面设置的补充提示词。
      *
      * @param assistantPrompt 用户补充的小C角色提示词
+     * @param providerName 对话模型提供商标准名称
      * @return 发送给模型的系统提示词
      */
-    private String buildSystemPrompt(String assistantPrompt) {
-        String systemPrompt = buildDefaultSystemPrompt();
+    private String buildSystemPrompt(String assistantPrompt, String providerName) {
+        String systemPrompt = buildDefaultSystemPrompt(providerName);
         if (assistantPrompt == null || assistantPrompt.isBlank()) {
             return systemPrompt;
         }

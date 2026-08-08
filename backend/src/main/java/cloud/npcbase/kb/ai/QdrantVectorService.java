@@ -1,5 +1,6 @@
 package cloud.npcbase.kb.ai;
 
+import cloud.npcbase.kb.common.SnowflakeIdGenerator;
 import cloud.npcbase.kb.config.KbProperties;
 import cloud.npcbase.kb.ingest.DocumentChunk;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -219,7 +220,7 @@ public class QdrantVectorService {
             payload.put("chunkNo", chunk.getChunkNo());
             payload.put("text", chunk.getContent());
             Map<String, Object> point = new HashMap<>();
-            point.put("id", chunk.getId());
+            point.put("id", SnowflakeIdGenerator.toLong(chunk.getId()));
             point.put("vector", vectors.get(index));
             point.put("payload", payload);
             points.add(point);

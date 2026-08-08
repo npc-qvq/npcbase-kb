@@ -15,6 +15,7 @@ spring:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
   servlet:
     multipart:
       max-file-size: 50MB
@@ -23,6 +24,19 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
 kb:
+  access:
+    key-hash: ${KB_ACCESS_KEY_HASH:}
+    token-secret: ${KB_ACCESS_TOKEN_SECRET:}
+    demo-conversation-id: ${KB_PUBLIC_DEMO_CONVERSATION_ID:}
+    public-provider: ${KB_PUBLIC_PROVIDER:zhipu}
+    public-message-limit: ${KB_PUBLIC_MESSAGE_LIMIT:5}
+    public-ip-daily-limit: ${KB_PUBLIC_IP_DAILY_LIMIT:20}
+    public-global-daily-limit: ${KB_PUBLIC_GLOBAL_DAILY_LIMIT:100}
+    token-ttl-hours: ${KB_ACCESS_TOKEN_TTL_HOURS:24}
+    unlock-max-attempts: ${KB_ACCESS_UNLOCK_MAX_ATTEMPTS:5}
+    unlock-window-minutes: ${KB_ACCESS_UNLOCK_WINDOW_MINUTES:10}
+    trust-forwarded-for: ${KB_ACCESS_TRUST_FORWARDED_FOR:false}
+    cookie-secure: ${KB_ACCESS_COOKIE_SECURE:false}
   storage-root: ${KB_STORAGE_ROOT:./runtime}
   qdrant:
     url: ${KB_QDRANT_URL:}
@@ -31,7 +45,7 @@ kb:
     port: ${KB_QDRANT_PORT:6333}
     collection: ${KB_QDRANT_COLLECTION:npcbase_bge_m3}
   chat:
-    active-provider: ${KB_CHAT_ACTIVE:deepseek}
+    active-provider: ${KB_CHAT_ACTIVE:zhipu}
     providers:
       deepseek:
         enabled: ${KB_CHAT_PROVIDERS_DEEPSEEK_ENABLED:false}

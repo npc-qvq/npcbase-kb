@@ -2,7 +2,7 @@
 
 NPC Base 是一个个人知识库问答系统。第一阶段已经完成：资料可上传、解析、切片、向量化、语义检索、对话归档，以及按需启用 DeepSeek 的 RAG 问答。
 
-> 系统当前没有登录页和鉴权逻辑，打开前端即可进入工作台。请仅部署在受信任的内网或通过网关自行限制访问。
+> 系统不提供账号登录：匿名访客可只读查看历史会话，并在服务器指定的测试会话中使用智谱 GLM 提问最多 5 次；输入唯一访问密钥后解锁全部管理操作。
 
 ## 已实现能力
 
@@ -16,6 +16,7 @@ NPC Base 是一个个人知识库问答系统。第一阶段已经完成：资�
 - 前端为三栏工作台：历史会话、问答区、资料归档区。
 
 ## 架构
+- 使用 PBKDF2 密钥哈希、HttpOnly 签名 Cookie 和 Redis 额度实现无账号访问控制。
 
 ```mermaid
 flowchart LR
@@ -76,6 +77,7 @@ flowchart TD
 - Java 17
 - Maven 3.9+
 - Node.js 18+
+- Redis 6+
 - MySQL 8+
 - 可访问的 Qdrant 服务
 - SiliconFlow Embedding Key；DeepSeek Key 仅在需要增强回答时配置
@@ -93,6 +95,8 @@ SPRING_DATASOURCE_URL=jdbc:mysql://<host>:3306/npcbase_kb?useUnicode=true&charac
 SPRING_DATASOURCE_USERNAME=<username>
 SPRING_DATASOURCE_PASSWORD=<password>
 
+SPRING_DATA_REDIS_HOST=localhost
+SPRING_DATA_REDIS_PORT=6379
 KB_QDRANT_URL=https://<qdrant-host>
 KB_QDRANT_API_KEY=<qdrant-api-key>
 KB_QDRANT_COLLECTION=npcbase_bge_m3
@@ -108,6 +112,20 @@ KB_CHAT_ENABLED=true
 KB_CHAT_BASE_URL=https://api.deepseek.com
 KB_CHAT_API_KEY=<deepseek-api-key>
 KB_CHAT_MODEL=<deepseek-model>
+
+KB_ACCESS_KEY_HASH=<pbkdf2-access-key-hash>
+KB_ACCESS_TOKEN_SECRET=<at-least-32-byte-random-secret>
+KB_PUBLIC_DEMO_CONVERSATION_ID=<created-demo-conversation-id>
+KB_PUBLIC_PROVIDER=zhipu
+KB_PUBLIC_MESSAGE_LIMIT=5
+KB_PUBLIC_IP_DAILY_LIMIT=20
+KB_PUBLIC_GLOBAL_DAILY_LIMIT=100
+KB_ACCESS_TOKEN_TTL_HOURS=24
+
+# 本地 HTTP 使用 false；线上 HTTPS 必须设置为 true
+KB_ACCESS_COOKIE_SECURE=false
+KB_ACCESS_TRUST_FORWARDED_FOR=false
+
 ```
 
 ### 3. 启动后端
@@ -139,6 +157,8 @@ npm run dev
 | 重建索引 | `POST /api/documents/{id}/reindex` |
 | 删除资料 | `DELETE /api/documents/{id}` |
 | 创建/查询会话 | `POST /api/conversations`、`GET /api/conversations` |
+| 查询访问状态 | `GET /api/access/status` |
+| 密钥解锁/锁定 | `POST /api/access/unlock`、`DELETE /api/access/unlock` |
 | 查询消息 | `GET /api/conversations/{id}/messages` |
 | 发送消息 | `POST /api/conversations/{id}/messages` |
 | 删除会话 | `DELETE /api/conversations/{id}` |

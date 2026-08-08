@@ -1,11 +1,11 @@
 package cloud.npcbase.kb.conversation;
 
+import cloud.npcbase.kb.common.SnowflakeIdGenerator;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 /**
  * 保存一条小C知识库对话的标题、启动状态和时间信息。
@@ -61,7 +61,7 @@ public class Conversation {
      */
     public static Conversation create() {
         Conversation conversation = new Conversation();
-        conversation.id = UUID.randomUUID().toString();
+        conversation.id = SnowflakeIdGenerator.nextId();
         conversation.title = "新对话";
         conversation.npcStarted = false;
         conversation.deleted = false;
@@ -97,6 +97,20 @@ public class Conversation {
         }
         touch();
     }
+    /**
+     * 使用用户输入的新名称重命名当前会话。
+     *
+     * @param title 已通过业务层校验的新会话名称
+     * @throws IllegalArgumentException 当会话名称为空时抛出
+     */
+    public void rename(String title) {
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("请输入会话名称");
+        }
+        this.title = title.trim();
+        touch();
+    }
+
 
     /**
      * 标记会话已逻辑删除。

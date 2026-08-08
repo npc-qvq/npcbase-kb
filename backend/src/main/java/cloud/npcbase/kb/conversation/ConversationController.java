@@ -1,8 +1,14 @@
 package cloud.npcbase.kb.conversation;
+import cloud.npcbase.kb.access.AccessService;
+import cloud.npcbase.kb.access.PublicQuotaReservation;
 
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -13,7 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * 提供小C历史会话的新建、查询、对话和删除接口。
+ * 提供小C历史会话的新建、查询、对话、重命名和删除接口。
  *
  * @author NPC
  * @date 2026-07-16 15:10:00
@@ -28,12 +34,19 @@ public class ConversationController {
     private final ConversationService conversationService;
 
     /**
+     * 唯一密钥和公开体验权限服务。
+     */
+    private final AccessService accessService;
+
+    /**
      * 创建历史会话接口控制器。
      *
      * @param conversationService 会话持久化业务服务
+     * @param accessService 唯一密钥和公开体验权限服务
      */
-    public ConversationController(ConversationService conversationService) {
+    public ConversationController(ConversationService conversationService, AccessService accessService) {
         this.conversationService = conversationService;
+        this.accessService = accessService;
     }
 
     /**
@@ -73,11 +86,43 @@ public class ConversationController {
      *
      * @param id 会话主键
      * @param request 用户问题与小C提示词
+     * @param httpRequest 当前 HTTP 请求
+     * @param httpResponse 当前 HTTP 响应
      * @return 本次产生的消息和更新后的会话摘要
      */
     @PostMapping("/{id}/messages")
-    public ConversationChatResponse chat(@PathVariable String id, @RequestBody ConversationMessageRequest request) {
-        return conversationService.chat(id, request);
+    public ConversationChatResponse chat(@PathVariable String id,
+                                         @RequestBody ConversationMessageRequest request,
+                                         HttpServletRequest httpRequest,
+                                         HttpServletResponse httpResponse) {
+        boolean unlocked = accessService.isUnlocked(httpRequest);
+        PublicQuotaReservation reservation = null;
+        if (!unlocked) {
+            // 公开访客仅能为服务器配置的测试会话预占一次可用额度。
+            reservation = accessService.reservePublicMessage(httpRequest, httpResponse, id);
+        }
+        try {
+            String forcedProvider = unlocked ? null : accessService.publicProvider();
+            return conversationService.chat(id, request, forcedProvider);
+        } catch (RuntimeException exception) {
+            // 业务或模型调用失败时归还额度，确保只有成功回答才计数。
+            accessService.releasePublicMessage(reservation);
+            throw exception;
+        }
+    }
+
+    /**
+     * 修改指定历史会话的展示名称。
+     *
+     * @param id 会话主键
+     * @param request 新会话名称
+     * @return 更新后的会话摘要
+     */
+    @PatchMapping("/{id}")
+    public ConversationView rename(@PathVariable String id,
+                                   @Valid @RequestBody ConversationRenameRequest request) {
+        // 更新会话名称并返回最新摘要，使前端历史列表立即同步。
+        return conversationService.rename(id, request);
     }
 
     /**

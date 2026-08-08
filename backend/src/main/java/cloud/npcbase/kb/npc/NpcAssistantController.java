@@ -1,4 +1,6 @@
 package cloud.npcbase.kb.npc;
+import cloud.npcbase.kb.access.AccessService;
+import jakarta.servlet.http.HttpServletRequest;
 
 import cloud.npcbase.kb.ai.OpenAiCompatibleClient;
 import org.springframework.http.ResponseEntity;
@@ -33,14 +35,23 @@ public class NpcAssistantController {
     private final OpenAiCompatibleClient aiClient;
 
     /**
+     * 唯一密钥和公开体验权限服务。
+     */
+    private final AccessService accessService;
+
+    /**
      * 创建小C助手接口控制器。
      *
      * @param npcAssistantService 小C助手业务服务
      * @param aiClient OpenAI 兼容模型接口客户端
+     * @param accessService 唯一密钥和公开体验权限服务
      */
-    public NpcAssistantController(NpcAssistantService npcAssistantService, OpenAiCompatibleClient aiClient) {
+    public NpcAssistantController(NpcAssistantService npcAssistantService,
+                                  OpenAiCompatibleClient aiClient,
+                                  AccessService accessService) {
         this.npcAssistantService = npcAssistantService;
         this.aiClient = aiClient;
+        this.accessService = accessService;
     }
 
     /**
@@ -68,14 +79,18 @@ public class NpcAssistantController {
     /**
      * 返回全部对话模型提供商及当前激活状态。
      *
+     * @param request 当前 HTTP 请求
      * @return 提供商列表和激活信息
      */
     @GetMapping("/providers")
-    public Map<String, Object> providers() {
+    public Map<String, Object> providers(HttpServletRequest request) {
+        boolean unlocked = accessService.isUnlocked(request);
+        String activeProvider = unlocked ? aiClient.getActiveProvider() : accessService.publicProvider();
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("activeProvider", aiClient.getActiveProvider());
-        result.put("activeDisplayName", aiClient.getActiveProviderDisplayName());
+        result.put("activeProvider", activeProvider);
+        result.put("activeDisplayName", aiClient.getProviderDisplayName(activeProvider));
         result.put("providers", aiClient.listProviders());
+        result.put("switchingAllowed", unlocked);
         return result;
     }
 

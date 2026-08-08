@@ -1,11 +1,11 @@
 package cloud.npcbase.kb.conversation;
 
+import cloud.npcbase.kb.common.SnowflakeIdGenerator;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 /**
  * 保存一条会话中的用户、小C或系统消息。
@@ -65,7 +65,7 @@ public class ConversationMessage {
      */
     public static ConversationMessage create(String conversationId, String role, String content, String citationsJson) {
         ConversationMessage message = new ConversationMessage();
-        message.id = UUID.randomUUID().toString();
+        message.id = SnowflakeIdGenerator.nextId();
         message.conversationId = conversationId;
         message.role = role;
         message.content = content;

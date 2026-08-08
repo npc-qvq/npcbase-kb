@@ -33,4 +33,9 @@ public class KbProperties {
      */
     private EmbeddingProperties embedding = new EmbeddingProperties();
 
+    /**
+     * 公开体验、唯一密钥和访问凭证配置。
+     */
+    private AccessProperties access = new AccessProperties();
+
 }

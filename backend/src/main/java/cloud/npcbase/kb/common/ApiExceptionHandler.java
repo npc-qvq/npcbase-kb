@@ -1,6 +1,8 @@
 package cloud.npcbase.kb.common;
+import cloud.npcbase.kb.access.AccessException;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -67,6 +69,21 @@ public class ApiExceptionHandler {
         LOGGER.error("接口服务状态异常", exception);
         return createErrorResponse(exception.getMessage());
     }
+    /**
+     * 处理访问密钥、公开额度和敏感操作权限异常。
+     *
+     * @param exception 访问控制异常
+     * @return 包含稳定错误码和用户提示的响应
+     */
+    @ExceptionHandler(AccessException.class)
+    public ResponseEntity<Map<String, String>> accessDenied(AccessException exception) {
+        LOGGER.warn("访问控制拒绝请求 code={}, message={}", exception.getCode(), exception.getMessage());
+        Map<String, String> response = new HashMap<>();
+        response.put("code", exception.getCode());
+        response.put("message", exception.getMessage());
+        return ResponseEntity.status(exception.getStatus()).body(response);
+    }
+
 
     /**
      * 创建统一的错误响应对象。

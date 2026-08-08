@@ -1,12 +1,12 @@
 package cloud.npcbase.kb.ingest;
 
+import cloud.npcbase.kb.common.SnowflakeIdGenerator;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 /**
  * 记录一段可被关键词和语义检索的文档文本。
@@ -67,7 +67,7 @@ public class DocumentChunk {
      * @param content 切片文本内容
      */
     public DocumentChunk(String documentId, int chunkNo, String content) {
-        this.id = UUID.randomUUID().toString();
+        this.id = SnowflakeIdGenerator.nextId();
         this.documentId = documentId;
         this.chunkNo = chunkNo;
         this.content = content;

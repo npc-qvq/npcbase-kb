@@ -1,11 +1,11 @@
 package cloud.npcbase.kb.document;
 
+import cloud.npcbase.kb.common.SnowflakeIdGenerator;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 /**
  * 保存知识库文档元数据和索引处理状态。
@@ -89,7 +89,7 @@ public class KbDocument {
      * @param storagePath      原始文件存储路径
      */
     public KbDocument(String title, String originalFilename, String fileType, long fileSize, String storagePath) {
-        this.id = UUID.randomUUID().toString();
+        this.id = SnowflakeIdGenerator.nextId();
         this.title = title;
         this.originalFilename = originalFilename;
         this.fileType = fileType;
