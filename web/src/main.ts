@@ -1,4 +1,27 @@
-import { computed, createApp, nextTick, onMounted, ref } from 'vue'
+import { computed, createApp, nextTick, onMounted, ref, watch } from 'vue'
+import { marked } from 'marked'
+import hljs from 'highlight.js/lib/common'
+import DOMPurify from 'dompurify'
+import {
+  ArrowDown,
+  Check,
+  ChevronDown,
+  Copy,
+  FileText,
+  Filter,
+  Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Send,
+  Square,
+  Sun
+} from '@lucide/vue'
+import 'highlight.js/styles/github.css'
 import './style.css'
 
 /** 知识库归档中的一份文档。 */
@@ -25,6 +48,7 @@ type ChatMessage = {
   role: 'user' | 'assistant' | 'system'
   content: string
   citations?: Citation[]
+  createdAt?: string
 }
 
 /** 左侧历史列表中保存的一次完整会话。 */
@@ -51,7 +75,39 @@ type AccessStatus = {
   publicProvider: string
 }
 
+/** Markdown 代码块渲染器，为每段代码提供语言标识和独立复制按钮。 */
+const markdownRenderer = new marked.Renderer()
+markdownRenderer.code = ({ text, lang }) => {
+  const requestedLanguage = (lang || '').trim().split(/\s+/)[0]
+  const language = requestedLanguage && hljs.getLanguage(requestedLanguage) ? requestedLanguage : ''
+  const highlighted = language
+    ? hljs.highlight(text, { language }).value
+    : hljs.highlightAuto(text).value
+  const encodedCode = encodeURIComponent(text)
+  return `<div class="code-block"><div class="code-toolbar"><span>${language || 'text'}</span><button type="button" data-code-copy="${encodedCode}" aria-label="复制代码">复制代码</button></div><pre><code class="hljs${language ? ` language-${language}` : ''}">${highlighted}</code></pre></div>`
+}
+marked.setOptions({ gfm: true, breaks: true, renderer: markdownRenderer })
+
 const App = {
+  components: {
+    ArrowDown,
+    Check,
+    ChevronDown,
+    Copy,
+    FileText,
+    Filter,
+    Moon,
+    PanelLeftClose,
+    PanelLeftOpen,
+    PanelRightClose,
+    PanelRightOpen,
+    RefreshCw,
+    RotateCcw,
+    Search,
+    Send,
+    Square,
+    Sun
+  },
   setup() {
     /** 当前打开会话中小C是否已收到启动口令。 */
     const npcStarted = ref(false)
@@ -115,6 +171,47 @@ const App = {
 
     /** 对话区需要展示的网络或业务错误。 */
     const chatError = ref('')
+
+    function readPreference(key: string) {
+      try {
+        return localStorage.getItem(key)
+      } catch {
+        return null
+      }
+    }
+
+    function writePreference(key: string, value: string) {
+      try {
+        localStorage.setItem(key, value)
+      } catch {
+        // 浏览器禁用本地存储时保持内存状态即可。
+      }
+    }
+
+    /** 对话区内不打断阅读的轻提示。 */
+    const chatNotice = ref('')
+
+    /** 输入框元素，用于重试或继续追问后恢复键盘焦点。 */
+    const composerInput = ref<HTMLTextAreaElement | null>(null)
+
+    /** 纯前端会话标题搜索词。 */
+    const conversationSearch = ref('')
+
+    /** 左右侧栏折叠状态和主题均只保存在当前浏览器。 */
+    const leftSidebarCollapsed = ref(readPreference('kb-left-sidebar') === 'collapsed')
+    const rightSidebarCollapsed = ref(readPreference('kb-right-sidebar') === 'collapsed')
+    const darkMode = ref(readPreference('kb-theme') === 'dark')
+
+    /** 首次请求期间展示骨架和空状态。 */
+    const loadingConversations = ref(true)
+    const loadingMessages = ref(false)
+    const loadingDocuments = ref(true)
+
+    /** 最近完成整条复制的消息主键。 */
+    const copiedMessageId = ref('')
+
+    let activeChatController: AbortController | null = null
+    let copiedMessageTimer: number | undefined
 
     /** 等待用户确认删除的会话或资料。 */
     const pendingDelete = ref<PendingDelete | null>(null)
@@ -203,6 +300,18 @@ const App = {
     /** 右侧归档区从后端读取的文档列表。 */
     const documents = ref<DocumentItem[]>([])
 
+    /** 纯前端资料标题、文件名搜索词与处理状态筛选。 */
+    const documentSearch = ref('')
+    const documentStatusFilter = ref('ALL')
+    const documentFilterMenuOpen = ref(false)
+    const documentFilterOptions = [
+      { value: 'ALL', label: '全部状态' },
+      { value: 'INDEXED', label: '可提问' },
+      { value: 'PROCESSING', label: '处理中' },
+      { value: 'FAILED', label: '失败' }
+    ]
+    const documentStatusFilterLabel = computed(() => documentFilterOptions.find(option => option.value === documentStatusFilter.value)?.label || '全部状态')
+
     /** 右侧上传区当前选中的资料文件。 */
     const file = ref<File | null>(null)
 
@@ -254,6 +363,30 @@ const App = {
     /** 当前会话中的用户提问列表；右侧导航只展示提问，不展示小C完整回答。 */
     const userMessages = computed(() => messages.value.filter(message => message.role === 'user'))
 
+    /** 会话和资料搜索仅过滤已加载数据，不改变服务端内容。 */
+    const filteredConversations = computed(() => {
+      const keyword = conversationSearch.value.trim().toLocaleLowerCase()
+      if (!keyword) {
+        return conversations.value
+      }
+      return conversations.value.filter(item => item.title.toLocaleLowerCase().includes(keyword))
+    })
+
+    const filteredDocuments = computed(() => {
+      const keyword = documentSearch.value.trim().toLocaleLowerCase()
+      return documents.value.filter(item => {
+        const matchesKeyword = !keyword
+          || item.title.toLocaleLowerCase().includes(keyword)
+          || item.originalFilename.toLocaleLowerCase().includes(keyword)
+        const matchesStatus = documentStatusFilter.value === 'ALL'
+          || (documentStatusFilter.value === 'PROCESSING' && ['UPLOADED', 'PARSING', 'INDEXING'].includes(item.status))
+          || item.status === documentStatusFilter.value
+        return matchesKeyword && matchesStatus
+      })
+    })
+
+    const showBackToLatest = computed(() => messages.value.length > 0 && !shouldAutoFollowLatest.value)
+
     /**
      * 将后端处理状态转换为资料列表中更容易理解的中文说明。
      *
@@ -269,6 +402,151 @@ const App = {
         FAILED: '处理失败，请查看原因'
       }
       return textMap[status] || '正在处理中'
+    }
+
+    /** 安全渲染小C回答中的 Markdown，脚本和危险属性会被清理。 */
+    function renderMarkdown(content: string) {
+      const html = marked.parse(content, { async: false }) as string
+      return DOMPurify.sanitize(html)
+    }
+
+    /** 将文本写入剪贴板，并兼容不支持 Clipboard API 的浏览器。 */
+    async function copyText(value: string) {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value)
+        return
+      }
+      const helper = document.createElement('textarea')
+      helper.value = value
+      helper.style.position = 'fixed'
+      helper.style.opacity = '0'
+      document.body.appendChild(helper)
+      helper.select()
+      document.execCommand('copy')
+      helper.remove()
+    }
+
+    /** 处理 Markdown 代码块中的独立复制按钮。 */
+    async function handleMarkdownClick(event: MouseEvent) {
+      const target = event.target
+      if (!(target instanceof Element)) {
+        return
+      }
+      const button = target.closest<HTMLButtonElement>('[data-code-copy]')
+      if (!button?.dataset.codeCopy) {
+        return
+      }
+      try {
+        await copyText(decodeURIComponent(button.dataset.codeCopy))
+        button.textContent = '已复制'
+        window.setTimeout(() => { button.textContent = '复制代码' }, 1200)
+      } catch {
+        chatNotice.value = '复制失败，请手动选择代码'
+      }
+    }
+
+    /** 复制一整条问答内容。 */
+    async function copyMessage(message: ChatMessage) {
+      try {
+        await copyText(message.content)
+        copiedMessageId.value = message.id
+        if (copiedMessageTimer !== undefined) {
+          window.clearTimeout(copiedMessageTimer)
+        }
+        copiedMessageTimer = window.setTimeout(() => { copiedMessageId.value = '' }, 1400)
+      } catch {
+        chatNotice.value = '复制失败，请手动选择内容'
+      }
+    }
+
+    /** 在消息下方显示简短时间，避免为无时间字段的旧数据制造假时间。 */
+    function formatMessageTime(value?: string) {
+      if (!value) {
+        return ''
+      }
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) {
+        return ''
+      }
+      return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(date)
+    }
+
+    function toggleLeftSidebar() {
+      leftSidebarCollapsed.value = !leftSidebarCollapsed.value
+      writePreference('kb-left-sidebar', leftSidebarCollapsed.value ? 'collapsed' : 'expanded')
+    }
+
+    function toggleRightSidebar() {
+      rightSidebarCollapsed.value = !rightSidebarCollapsed.value
+      writePreference('kb-right-sidebar', rightSidebarCollapsed.value ? 'collapsed' : 'expanded')
+    }
+
+    function toggleTheme() {
+      darkMode.value = !darkMode.value
+      writePreference('kb-theme', darkMode.value ? 'dark' : 'light')
+    }
+
+    async function focusComposer() {
+      await nextTick()
+      composerInput.value?.focus()
+    }
+
+    /** 输入内容较短时自然增高，长内容达到上限后在输入框内部滚动。 */
+    function resizeComposer() {
+      const input = composerInput.value
+      if (!input) {
+        return
+      }
+      input.style.height = 'auto'
+      const nextHeight = Math.min(Math.max(input.scrollHeight, 58), 180)
+      input.style.height = `${nextHeight}px`
+      input.style.overflowY = input.scrollHeight > 180 ? 'auto' : 'hidden'
+    }
+
+    function conversationDraftKey(conversationId: string) {
+      return `kb-draft-${conversationId}`
+    }
+
+    function restoreConversationDraft() {
+      if (!currentConversationId.value) {
+        question.value = ''
+        return
+      }
+      question.value = readPreference(conversationDraftKey(currentConversationId.value)) || ''
+      void nextTick(resizeComposer)
+    }
+
+    watch(question, () => {
+      if (currentConversationId.value) {
+        writePreference(conversationDraftKey(currentConversationId.value), question.value)
+      }
+      void nextTick(resizeComposer)
+    })
+
+    watch(currentConversationId, restoreConversationDraft)
+
+    /** 从回答回到输入框继续追问，不向服务端写入额外状态。 */
+    async function continueFromMessage() {
+      chatNotice.value = '可以继续补充条件或追问细节'
+      await focusComposer()
+    }
+
+    /** 找到该回答前最近的用户问题并通过现有问答接口再次提交。 */
+    async function retryAssistantMessage(messageId: string) {
+      const answerIndex = messages.value.findIndex(item => item.id === messageId)
+      if (answerIndex < 0 || asking.value) {
+        return
+      }
+      const source = messages.value.slice(0, answerIndex).reverse().find(item => item.role === 'user')
+      if (!source) {
+        return
+      }
+      await send(source.content)
+    }
+
+    /** 只终止当前浏览器等待，不依赖新增后端接口。 */
+    function stopAnswer() {
+      activeChatController?.abort()
     }
 
     /**
@@ -484,6 +762,24 @@ const App = {
       providerMenuOpen.value = false
     }
 
+    function toggleDocumentFilterMenu() {
+      documentFilterMenuOpen.value = !documentFilterMenuOpen.value
+    }
+
+    function closeDocumentFilterMenu() {
+      documentFilterMenuOpen.value = false
+    }
+
+    function selectDocumentFilter(value: string) {
+      documentStatusFilter.value = value
+      closeDocumentFilterMenu()
+    }
+
+    function closeFloatingMenus() {
+      closeProviderMenu()
+      closeDocumentFilterMenu()
+    }
+
     /**
      * 从自定义圆角菜单选择可用模型，并复用原有后端切换接口。
      *
@@ -501,9 +797,14 @@ const App = {
      * 刷新右侧已归档资料，便于上传、删除和重建索引后同步状态。
      */
     async function refreshDocuments() {
-      const response = await request('/api/documents')
-      if (response.ok) {
-        documents.value = (await response.json()).content || []
+      loadingDocuments.value = true
+      try {
+        const response = await request('/api/documents')
+        if (response.ok) {
+          documents.value = (await response.json()).content || []
+        }
+      } finally {
+        loadingDocuments.value = false
       }
     }
 
@@ -601,9 +902,14 @@ const App = {
      * 从后端读取数据库中的历史会话列表。
      */
     async function loadConversations() {
-      const response = await request('/api/conversations')
-      if (response.ok) {
-        conversations.value = await response.json()
+      loadingConversations.value = true
+      try {
+        const response = await request('/api/conversations')
+        if (response.ok) {
+          conversations.value = await response.json()
+        }
+      } finally {
+        loadingConversations.value = false
       }
     }
 
@@ -632,17 +938,22 @@ const App = {
      * @param conversation 待打开的历史会话
      */
     async function selectConversation(conversation: Conversation) {
-
-      const response = await request(`/api/conversations/${conversation.id}/messages`)
-      if (!response.ok) {
-        chatError.value = await errorOf(response, '加载会话记录失败')
-        return
+      loadingMessages.value = true
+      chatNotice.value = ''
+      try {
+        const response = await request(`/api/conversations/${conversation.id}/messages`)
+        if (!response.ok) {
+          chatError.value = await errorOf(response, '加载会话记录失败')
+          return
+        }
+        currentConversationId.value = conversation.id
+        npcStarted.value = conversation.npcStarted
+        messages.value = await response.json()
+        chatError.value = ''
+        await scrollToLatestMessage()
+      } finally {
+        loadingMessages.value = false
       }
-      currentConversationId.value = conversation.id
-      npcStarted.value = conversation.npcStarted
-      messages.value = await response.json()
-      chatError.value = ''
-      await scrollToLatestMessage()
     }
 
     /**
@@ -1030,7 +1341,7 @@ const App = {
     /**
      * 提交启动口令或问题；默认使用本地资料模式，启动小C后才请求大模型。
      */
-    async function send() {
+    async function send(contentOverride?: string | Event) {
       if (!canSendMessage.value) {
         const message = publicQuotaExhausted.value
           ? '公开体验次数已用完，请输入访问密钥继续'
@@ -1038,12 +1349,17 @@ const App = {
         await openAccessModal(message)
         return
       }
-      const content = question.value.trim()
+      const content = typeof contentOverride === 'string'
+        ? contentOverride.trim()
+        : question.value.trim()
       if (!content || asking.value) {
         return
       }
       chatError.value = ''
-      question.value = ''
+      chatNotice.value = ''
+      if (typeof contentOverride !== 'string') {
+        question.value = ''
+      }
       if (!currentConversationId.value) {
         await startNewChat()
       }
@@ -1057,6 +1373,8 @@ const App = {
       messages.value.push(pendingMessage)
       await scrollToLatestMessage()
       asking.value = true
+      const controller = new AbortController()
+      activeChatController = controller
       // “正在思考”消息刚插入后再次滚动，确保它完整显示在底部输入框上方。
       await scrollToLatestMessage()
       try {
@@ -1064,6 +1382,7 @@ const App = {
         const response = await request(`/api/conversations/${conversationId}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({ question: content, assistantPrompt })
         })
         if (!response.ok) {
@@ -1087,9 +1406,16 @@ const App = {
         if (shouldAutoFollowLatest.value && latestAssistantMessage) {
           await scrollToAnswerStart(latestAssistantMessage.id)
         }
-      } catch {
-        chatError.value = '网络请求失败，提问已保留，请稍后重试。'
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          chatNotice.value = '已停止等待；服务端若已完成处理，重新进入会话即可看到结果'
+        } else {
+          chatError.value = '网络请求失败，提问已保留，请稍后重试。'
+        }
       } finally {
+        if (activeChatController === controller) {
+          activeChatController = null
+        }
         asking.value = false
       }
     }
@@ -1098,6 +1424,12 @@ const App = {
      * 页面初次打开时加载资料归档，不会触发任何模型调用。
      */
     onMounted(async () => {
+      if (window.innerWidth <= 1180 && readPreference('kb-right-sidebar') === null) {
+        rightSidebarCollapsed.value = true
+      }
+      if (window.innerWidth <= 760 && readPreference('kb-left-sidebar') === null) {
+        leftSidebarCollapsed.value = true
+      }
       await loadAccessStatus()
       await loadProviders()
       await loadConversations()
@@ -1118,10 +1450,13 @@ const App = {
       archiveMessage,
       asking,
       chatError,
+      chatNotice,
       closeChatError,
       closeDeleteModal,
       chooseFile,
       conversations,
+      conversationSearch,
+      filteredConversations,
       confirmDelete,
       composerHint,
       composerPlaceholder,
@@ -1130,22 +1465,43 @@ const App = {
       deleteConversation,
       documentStatusText,
       documents,
+      documentSearch,
+      documentStatusFilter,
+      documentStatusFilterLabel,
+      documentFilterMenuOpen,
+      documentFilterOptions,
+      filteredDocuments,
       file,
       loadProviders,
       closeProviderMenu,
+      closeDocumentFilterMenu,
+      closeFloatingMenus,
       messageList,
       messages,
+      loadingConversations,
+      loadingDocuments,
+      loadingMessages,
       npcStarted,
       pendingDelete,
       providers,
       providerMenuOpen,
       question,
+      composerInput,
+      resizeComposer,
       refreshDocuments,
       handleMessageListScroll,
       reindexDocument,
       registerMessageElement,
       removeDocument,
       send,
+      stopAnswer,
+      retryAssistantMessage,
+      continueFromMessage,
+      copyMessage,
+      copiedMessageId,
+      renderMarkdown,
+      handleMarkdownClick,
+      formatMessageTime,
       selectConversation,
       selectProvider,
       scrollToMessage,
@@ -1154,6 +1510,8 @@ const App = {
       switchProvider,
       title,
       toggleProviderMenu,
+      toggleDocumentFilterMenu,
+      selectDocumentFilter,
       questionPreview,
       activePromptId,
       conversationNavigatorPinned,
@@ -1169,6 +1527,14 @@ const App = {
       updateActivePrompt,
       upload,
       uploading,
+      showBackToLatest,
+      scrollToLatestMessage,
+      leftSidebarCollapsed,
+      rightSidebarCollapsed,
+      darkMode,
+      toggleLeftSidebar,
+      toggleRightSidebar,
+      toggleTheme,
       deleting,
       editingConversation,
       conversationTitleDraft,
@@ -1199,8 +1565,8 @@ const App = {
     }
   },
   template: `
-    <div class="app-shell" @click="closeProviderMenu">
-      <aside class="left-sidebar">
+    <div class="app-shell" :class="{ 'left-collapsed': leftSidebarCollapsed, 'right-collapsed': rightSidebarCollapsed, 'theme-dark': darkMode }" @click="closeFloatingMenus">
+      <aside class="left-sidebar" :class="{ collapsed: leftSidebarCollapsed }">
         <a class="brand" href="#">
           <span class="brand-mark">C</span>
           <span><strong>小C · NPC</strong><small>KNOWLEDGE ASSISTANT</small></span>
@@ -1213,8 +1579,13 @@ const App = {
           <button v-else type="button" @click="openAccessModal()">输入访问密钥</button>
         </section>
         <section class="conversation-history">
-          <p class="side-title">历史会话</p>
-          <div v-for="conversation in conversations" :key="conversation.id" class="history-row" :class="{ active: conversation.id === currentConversationId, demo: conversation.id === demoConversationId }">
+          <div class="section-heading"><p class="side-title">历史会话</p><small>{{ filteredConversations.length }}</small></div>
+          <label class="search-field conversation-search">
+            <Search :size="14" aria-hidden="true" />
+            <input v-model="conversationSearch" type="search" placeholder="搜索会话" aria-label="搜索会话">
+          </label>
+          <div v-if="loadingConversations" class="sidebar-skeleton" aria-label="正在加载会话"><span></span><span></span><span></span></div>
+          <div v-for="conversation in filteredConversations" v-else :key="conversation.id" class="history-row" :class="{ active: conversation.id === currentConversationId, demo: conversation.id === demoConversationId }">
             <button class="history-item" @click="selectConversation(conversation)">
               <span class="history-icon">◎</span><span class="history-title">{{ conversation.title }}</span><small v-if="conversation.id === demoConversationId" class="history-demo-badge">测试</small>
             </button>
@@ -1223,6 +1594,7 @@ const App = {
               <button class="history-delete" title="删除会话" aria-label="删除会话" @click.stop="deleteConversation(conversation)">×</button>
             </div>
           </div>
+          <p v-if="!loadingConversations && !filteredConversations.length" class="sidebar-empty">{{ conversationSearch ? '没有匹配的会话' : '暂无历史会话' }}</p>
         </section>
         <div class="sidebar-footer">
           <span class="status-dot" :class="{ active: effectiveNpcStarted }"></span>
@@ -1262,16 +1634,43 @@ const App = {
       </aside>
 
       <main class="chat-main">
-        <header class="chat-header"><div><strong>{{ currentConversationTitle }}</strong><small>小C · {{ effectiveNpcStarted ? activeProviderDisplayName + ' 增强回答' : '本地资料模式' }}</small></div><span class="chat-access-badge" :class="{ locked: !accessUnlocked }">{{ accessUnlocked ? (effectiveNpcStarted ? activeProviderDisplayName + ' 已启用' : '本地资料模式') : (isPublicDemoConversation ? '公开测试 · 剩余 ' + remainingMessages + ' 次' : '只读会话') }}</span></header>
+        <header class="chat-header">
+          <div class="chat-heading">
+            <button class="icon-button header-panel-toggle" type="button" :title="leftSidebarCollapsed ? '展开会话栏' : '收起会话栏'" :aria-label="leftSidebarCollapsed ? '展开会话栏' : '收起会话栏'" @click="toggleLeftSidebar"><PanelLeftOpen v-if="leftSidebarCollapsed" :size="17" /><PanelLeftClose v-else :size="17" /></button>
+            <div><strong>{{ currentConversationTitle }}</strong><small>小C · {{ effectiveNpcStarted ? activeProviderDisplayName + ' 增强回答' : '本地资料模式' }}</small></div>
+          </div>
+          <div class="chat-header-actions">
+            <span class="chat-access-badge" :class="{ locked: !accessUnlocked }">{{ accessUnlocked ? (effectiveNpcStarted ? activeProviderDisplayName + ' 已启用' : '本地资料模式') : (isPublicDemoConversation ? '公开测试 · 剩余 ' + remainingMessages + ' 次' : '只读会话') }}</span>
+            <button class="icon-button" type="button" :title="darkMode ? '切换浅色主题' : '切换深色主题'" :aria-label="darkMode ? '切换浅色主题' : '切换深色主题'" @click="toggleTheme"><Sun v-if="darkMode" :size="17" /><Moon v-else :size="17" /></button>
+            <button class="icon-button header-panel-toggle" type="button" :title="rightSidebarCollapsed ? '展开资料栏' : '收起资料栏'" :aria-label="rightSidebarCollapsed ? '展开资料栏' : '收起资料栏'" @click="toggleRightSidebar"><PanelRightOpen v-if="rightSidebarCollapsed" :size="17" /><PanelRightClose v-else :size="17" /></button>
+          </div>
+        </header>
         <section ref="messageList" class="message-list" @click="releaseConversationNavigator" @scroll="handleMessageListScroll">
+          <div v-if="loadingMessages" class="message-skeleton" aria-label="正在加载会话消息"><span></span><span></span><span></span></div>
+          <div v-else-if="!messages.length" class="empty-chat">
+            <span class="empty-chat-icon"><FileText :size="22" /></span>
+            <strong>从资料中开始一次提问</strong>
+            <p>{{ canSendMessage ? '输入问题后，小C 会优先检索右侧已归档资料。' : '当前会话只读，输入访问密钥后可以继续提问。' }}</p>
+          </div>
           <article v-for="message in messages" :key="message.id" :ref="element => registerMessageElement(message.id, element)" class="message" :class="message.role">
             <div class="avatar">{{ message.role === 'assistant' ? 'C' : message.role === 'user' ? '我' : '✦' }}</div>
-            <div class="message-body"><p>{{ message.content }}</p>
+            <div class="message-column">
+              <div class="message-body">
+                <p v-if="message.role === 'user'" class="user-content">{{ message.content }}</p>
+                <div v-else class="markdown-body" v-html="renderMarkdown(message.content)" @click="handleMarkdownClick"></div>
               <details v-for="citation in message.citations" :key="citation.documentId + citation.chunkNo" class="citation"><summary>{{ citation.documentTitle }} · 切片 {{ citation.chunkNo }}</summary><p>{{ citation.excerpt }}</p></details>
+              </div>
+              <div class="message-meta">
+                <span v-if="formatMessageTime(message.createdAt)">{{ formatMessageTime(message.createdAt) }}</span>
+                <button type="button" :title="copiedMessageId === message.id ? '已复制' : '复制消息'" @click.stop="copyMessage(message)"><Copy :size="14" />{{ copiedMessageId === message.id ? '已复制' : '复制' }}</button>
+                <button v-if="message.role === 'assistant'" type="button" title="重新提交上一条问题" :disabled="asking" @click.stop="retryAssistantMessage(message.id)"><RotateCcw :size="14" />重试</button>
+                <button v-if="message.role === 'assistant'" type="button" title="继续追问" @click.stop="continueFromMessage"><Send :size="14" />追问</button>
+              </div>
             </div>
           </article>
-          <article v-if="asking" class="message assistant"><div class="avatar">C</div><div class="message-body typing">小C 正在阅读资料并思考…</div></article>
+          <article v-if="asking" class="message assistant pending-answer"><div class="avatar">C</div><div class="message-body typing"><span></span><span></span><span></span><b>小C 正在阅读资料并组织回答</b></div></article>
         </section>
+        <button v-if="showBackToLatest" class="back-to-latest" type="button" @click="scrollToLatestMessage"><ArrowDown :size="16" />回到最新</button>
         <nav v-if="userMessages.length" ref="conversationNavigator" class="conversation-navigator" :class="{ expanded: conversationNavigatorExpanded, pinned: conversationNavigatorPinned }" aria-label="会话提问导航" @click.stop @mouseleave="scheduleConversationNavigatorClose">
           <div class="navigator-dots" aria-label="提问位置">
             <button v-for="message in userMessages" :key="'dot-' + message.id" class="navigator-dot" :class="{ active: message.id === activePromptId }" :title="questionPreview(message.content)" @mouseenter="previewNavigatorAtDot($event)" @click="selectPromptFromNavigator(message.id, $event)"></button>
@@ -1280,15 +1679,43 @@ const App = {
             <button v-for="message in userMessages" :key="'preview-' + message.id" class="navigator-preview-item" :class="{ active: message.id === activePromptId }" @click="selectPromptFromNavigator(message.id)">{{ questionPreview(message.content) }}</button>
           </div>
         </nav>
+        <p v-if="chatNotice" class="chat-notice" role="status">{{ chatNotice }}</p>
         <div class="composer" :class="{ locked: !canSendMessage }">
-          <textarea v-model="question" :disabled="!canSendMessage" @keydown.enter.exact.prevent="send" :placeholder="composerPlaceholder"></textarea>
-          <button :disabled="asking || (canSendMessage && !question.trim())" @click="send">{{ canSendMessage ? '发送 ↑' : '输入密钥' }}</button>
+          <textarea ref="composerInput" v-model="question" :disabled="!canSendMessage" @input="resizeComposer" @keydown.enter.exact.prevent="send()" :placeholder="composerPlaceholder" aria-label="输入问题"></textarea>
+          <button v-if="!canSendMessage" class="composer-action unlock" type="button" @click="openAccessModal()">输入密钥</button>
+          <button v-else-if="asking" class="composer-action stop" type="button" title="停止等待" aria-label="停止等待" @click="stopAnswer"><Square :size="15" />停止</button>
+          <button v-else class="composer-action send" type="button" :disabled="!question.trim()" title="发送消息" @click="send()"><Send :size="16" />发送</button>
           <small>{{ composerHint }}</small>
         </div>
       </main>
 
-      <aside class="archive-sidebar">
-        <header><div><p class="side-title">资料归档</p><strong>{{ documents.length }} 份资料</strong></div><button class="icon-button" @click="refreshDocuments">↻</button></header>
+      <aside class="archive-sidebar" :class="{ collapsed: rightSidebarCollapsed }">
+        <header>
+          <div><p class="side-title">资料归档</p><strong>{{ documents.length }} 份资料</strong></div>
+          <div class="archive-header-actions">
+            <button class="icon-button" type="button" :disabled="loadingDocuments" title="刷新资料" aria-label="刷新资料" @click="refreshDocuments"><RefreshCw :size="16" :class="{ spinning: loadingDocuments }" /></button>
+          </div>
+        </header>
+        <div class="archive-content">
+        <section class="archive-tools">
+          <label class="search-field">
+            <Search :size="14" aria-hidden="true" />
+            <input v-model="documentSearch" type="search" placeholder="搜索资料" aria-label="搜索资料">
+          </label>
+          <div class="document-filter" :class="{ open: documentFilterMenuOpen }" @click.stop @keydown.esc="closeDocumentFilterMenu">
+            <button type="button" class="document-filter-trigger" aria-haspopup="listbox" :aria-expanded="documentFilterMenuOpen" title="按处理状态筛选" @click="toggleDocumentFilterMenu">
+              <Filter :size="14" aria-hidden="true" />
+              <span>{{ documentStatusFilterLabel }}</span>
+              <ChevronDown :size="14" class="document-filter-chevron" aria-hidden="true" />
+            </button>
+            <div v-if="documentFilterMenuOpen" class="document-filter-menu" role="listbox" aria-label="按处理状态筛选">
+              <button v-for="option in documentFilterOptions" :key="option.value" type="button" role="option" class="document-filter-option" :class="{ active: option.value === documentStatusFilter }" :aria-selected="option.value === documentStatusFilter" @click="selectDocumentFilter(option.value)">
+                <span>{{ option.label }}</span>
+                <Check v-if="option.value === documentStatusFilter" :size="14" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </section>
         <section class="upload-box" :class="{ locked: !accessUnlocked }">
           <div v-if="!accessUnlocked" class="locked-operation">
             <span>🔒</span><strong>资料管理已锁定</strong><small>上传、重新索引和删除资料都需要访问密钥。</small>
@@ -1301,7 +1728,9 @@ const App = {
             <p v-if="archiveMessage" class="archive-message">{{ archiveMessage }}</p>
           </template>
         </section>
-        <ul class="archive-list"><li v-for="doc in documents" :key="doc.id"><span class="file-badge">{{ doc.fileType.toUpperCase() }}</span><div><strong>{{ doc.title }}</strong><small>原始文件：{{ doc.originalFilename }}</small><em :class="doc.status.toLowerCase()">{{ documentStatusText(doc.status) }}</em><small v-if="doc.failureReason" class="failure">{{ doc.failureReason }}</small></div><div class="archive-actions" :class="{ locked: !accessUnlocked }"><button class="reindex-button" :title="accessUnlocked ? '重新生成 BGE-M3 向量' : '输入密钥后重新索引'" @click="reindexDocument(doc.id)">{{ accessUnlocked ? '↻' : '🔒' }}</button><button class="delete-button" :title="accessUnlocked ? '删除资料' : '输入密钥后删除'" @click="removeDocument(doc.id)">{{ accessUnlocked ? '×' : '🔒' }}</button></div></li><li v-if="!documents.length" class="empty-archive">还没有资料，先上传一份文件吧。</li></ul>
+        <div v-if="loadingDocuments" class="archive-skeleton" aria-label="正在加载资料"><span></span><span></span><span></span></div>
+        <ul v-else class="archive-list"><li v-for="doc in filteredDocuments" :key="doc.id"><span class="file-badge">{{ doc.fileType.toUpperCase() }}</span><div><strong>{{ doc.title }}</strong><small>原始文件：{{ doc.originalFilename }}</small><em :class="doc.status.toLowerCase()">{{ documentStatusText(doc.status) }}</em><small v-if="doc.failureReason" class="failure">{{ doc.failureReason }}</small></div><div class="archive-actions" :class="{ locked: !accessUnlocked }"><button class="reindex-button" :title="accessUnlocked ? '重新生成 BGE-M3 向量' : '输入密钥后重新索引'" @click="reindexDocument(doc.id)">{{ accessUnlocked ? '↻' : '🔒' }}</button><button class="delete-button" :title="accessUnlocked ? '删除资料' : '输入密钥后删除'" @click="removeDocument(doc.id)">{{ accessUnlocked ? '×' : '🔒' }}</button></div></li><li v-if="!filteredDocuments.length" class="empty-archive">{{ documents.length ? '没有符合筛选条件的资料。' : '还没有资料，先上传一份文件吧。' }}</li></ul>
+        </div>
       </aside>
       <div v-if="accessModalOpen" class="access-modal-backdrop" @click.self="closeAccessModal">
         <section class="access-modal" role="dialog" aria-modal="true" aria-labelledby="access-modal-title" @keydown.esc="closeAccessModal">

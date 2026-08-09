@@ -5,6 +5,8 @@ services:
       dockerfile: deploy/Dockerfile
     env_file:
       - ../backend/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:9527:9527"
     volumes:
