@@ -166,6 +166,9 @@ textarea:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .chat-header { display: flex; align-items: center; justify-content: space-between; padding: 19px 30px; border-bottom: 1px solid rgba(222, 214, 199, .72); background: rgba(255, 253, 249, .52); }
 .chat-header strong, .chat-header small { display: block; }
 .chat-header > span { padding: 4px 9px; border: 1px solid #cee1dc; border-radius: 99px; background: #f0f7f5; color: var(--accent); font-size: 11px; }
+/* 清空按钮靠近会话状态展示，危险操作仅在确认弹窗中使用红色强调。 */
+.clear-conversation-button:hover:not(:disabled) { background: #f2e8e4; color: var(--danger); }
+.clear-conversation-button:disabled { cursor: not-allowed; opacity: .38; }
 .message-list { min-height: 0; overflow-y: scroll; overscroll-behavior: contain; padding: 30px max(34px, 9%) 54px; scrollbar-color: #b9a98f rgba(238, 233, 224, .72); scrollbar-gutter: stable; scrollbar-width: thin; }
 /* 为 Chromium 浏览器定制可见的暖灰进度条，便于长回答上下阅读。 */
 .message-list::-webkit-scrollbar { width: 10px; }

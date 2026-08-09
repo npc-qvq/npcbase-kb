@@ -41,6 +41,11 @@ public class ConversationService {
     private static final int MAX_CONVERSATION_TITLE_LENGTH = 60;
 
     /**
+     * 清空会话后默认启动智谱 GLM 使用的标准口令。
+     */
+    private static final String CLEAR_CONVERSATION_ACTIVATION_COMMAND = "小C启动 zhipu";
+
+    /**
      * 会话数据访问仓储。
      */
     private final ConversationRepository conversationRepository;
@@ -123,6 +128,30 @@ public class ConversationService {
                 .map(this::toMessageView)
                 .toList();
     }
+
+    /**
+     * 删除指定会话的全部消息并默认启用智谱 GLM，同时保留会话记录和名称。
+     *
+     * @param conversationId 会话主键
+     * @return 清空后的会话摘要
+     */
+    @Transactional
+    public ConversationView clearMessages(String conversationId) {
+        Conversation conversation = getActiveConversation(conversationId);
+        // 清空前确认智谱 GLM 可以启动，避免消息已删除但默认模型不可用。
+        NpcActivationResponse activation = npcAssistantService.activate(CLEAR_CONVERSATION_ACTIVATION_COMMAND);
+        if (!activation.active()) {
+            throw new IllegalStateException(activation.message());
+        }
+        // 物理删除当前会话的全部消息，确保刷新页面后不会重新出现。
+        messageRepository.delete(new LambdaQueryWrapper<ConversationMessage>()
+                .eq(ConversationMessage::getConversationId, conversationId));
+        // 持久化增强回答状态，使刷新页面后仍默认使用智谱 GLM。
+        conversation.startNpc();
+        conversationRepository.updateById(conversation);
+        return toConversationView(conversation);
+    }
+
     /**
      * 按创建时间和 Snowflake 主键稳定排列消息，并兼容同秒写入的旧 UUID 消息。
      *

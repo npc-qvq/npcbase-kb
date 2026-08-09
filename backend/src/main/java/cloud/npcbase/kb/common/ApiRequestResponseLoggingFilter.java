@@ -85,7 +85,10 @@ public class ApiRequestResponseLoggingFilter extends OncePerRequestFilter {
         if ("/api/access/unlock".equals(requestWrapper.getRequestURI())) {
             return "[REDACTED]";
         }
-        return new String(requestWrapper.getContentAsByteArray(), getCharset(requestWrapper.getCharacterEncoding()));
+        Charset charset = isJsonContentType(requestWrapper.getContentType())
+                ? StandardCharsets.UTF_8
+                : getCharset(requestWrapper.getCharacterEncoding());
+        return new String(requestWrapper.getContentAsByteArray(), charset);
     }
 
     /**
@@ -114,9 +117,14 @@ public class ApiRequestResponseLoggingFilter extends OncePerRequestFilter {
      * @return 响应体字符串
      */
     private String getResponseBody(ContentCachingResponseWrapper responseWrapper) {
-        Charset charset = isJsonContentType(responseWrapper.getContentType())
+        String contentType = responseWrapper.getContentType();
+        Charset declaredCharset = getCharset(responseWrapper.getCharacterEncoding());
+        // Spring may leave the content type unset while retaining Servlet's ISO-8859-1 default.
+        // API payloads are UTF-8 JSON, so do not decode that default as Latin-1.
+        Charset charset = isJsonContentType(contentType)
+                || (contentType == null && StandardCharsets.ISO_8859_1.equals(declaredCharset))
                 ? StandardCharsets.UTF_8
-                : getCharset(responseWrapper.getCharacterEncoding());
+                : declaredCharset;
         return new String(responseWrapper.getContentAsByteArray(), charset);
     }
 

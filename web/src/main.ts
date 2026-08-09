@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Eraser,
   FileText,
   Filter,
   Moon,
@@ -94,6 +95,7 @@ const App = {
     Check,
     ChevronDown,
     Copy,
+    Eraser,
     FileText,
     Filter,
     Moon,
@@ -218,6 +220,12 @@ const App = {
 
     /** 删除请求执行期间禁用弹窗按钮，避免重复提交。 */
     const deleting = ref(false)
+
+    /** 等待用户确认清空消息的当前会话；为空时不显示清空确认弹窗。 */
+    const pendingClearConversation = ref<Conversation | null>(null)
+
+    /** 清空请求执行期间禁用弹窗和标题栏按钮，避免重复提交。 */
+    const clearingConversation = ref(false)
 
     /** 当前正在编辑名称的历史会话；为空时不显示重命名弹窗。 */
     const editingConversation = ref<Conversation | null>(null)
@@ -957,6 +965,74 @@ const App = {
     }
 
     /**
+     * 打开当前会话的清空确认弹窗，未解锁时先请求访问密钥。
+     *
+     * @returns 权限检查和弹窗状态更新完成后的 Promise
+     */
+    async function openClearConversationModal() {
+      if (!accessUnlocked.value) {
+        await openAccessModal('清空会话需要先输入访问密钥')
+        return
+      }
+      const conversation = conversations.value.find(item => item.id === currentConversationId.value)
+      if (!conversation || asking.value) {
+        return
+      }
+      pendingClearConversation.value = conversation
+    }
+
+    /**
+     * 关闭清空确认弹窗，不修改会话或消息数据。
+     */
+    function closeClearConversationModal() {
+      if (!clearingConversation.value) {
+        pendingClearConversation.value = null
+      }
+    }
+
+    /**
+     * 删除当前会话的全部服务端消息，默认启用智谱 GLM，并同步清空页面消息和本地输入草稿。
+     *
+     * @returns 清空请求结束后的 Promise
+     */
+    async function confirmClearConversation() {
+      if (!accessUnlocked.value) {
+        await openAccessModal('清空会话需要先输入访问密钥')
+        return
+      }
+      const target = pendingClearConversation.value
+      if (!target || clearingConversation.value || asking.value) {
+        return
+      }
+      clearingConversation.value = true
+      try {
+        // 服务端物理删除当前会话的全部消息，刷新页面后也保持为空。
+        const response = await request(`/api/conversations/${target.id}/messages`, { method: 'DELETE' })
+        if (!response.ok) {
+          chatError.value = await errorOf(response, '清空会话失败')
+          return
+        }
+        const updatedConversation: Conversation = await response.json()
+        conversations.value = conversations.value.map(item => item.id === updatedConversation.id ? updatedConversation : item)
+        // 清空接口会把服务端默认提供商切换为智谱 GLM，重新读取后同步标题栏模型名称。
+        await loadProviders()
+        if (currentConversationId.value === target.id) {
+          messages.value = []
+          npcStarted.value = Boolean(updatedConversation.npcStarted)
+          question.value = ''
+          chatNotice.value = '本次会话已清空，智谱 GLM 已启用'
+          releaseConversationNavigator()
+          await focusComposer()
+        }
+        pendingClearConversation.value = null
+      } catch {
+        chatError.value = '网络连接失败，请确认后端服务正在运行'
+      } finally {
+        clearingConversation.value = false
+      }
+    }
+
+    /**
      * 删除指定会话及其数据库消息记录。
      *
      * @param conversation 待删除的历史会话
@@ -1451,13 +1527,16 @@ const App = {
       asking,
       chatError,
       chatNotice,
+      clearingConversation,
       closeChatError,
+      closeClearConversationModal,
       closeDeleteModal,
       chooseFile,
       conversations,
       conversationSearch,
       filteredConversations,
       confirmDelete,
+      confirmClearConversation,
       composerHint,
       composerPlaceholder,
       currentConversationId,
@@ -1483,6 +1562,7 @@ const App = {
       loadingMessages,
       npcStarted,
       pendingDelete,
+      pendingClearConversation,
       providers,
       providerMenuOpen,
       question,
@@ -1542,6 +1622,7 @@ const App = {
       renameConversationError,
       renameInput,
       openRenameConversation,
+      openClearConversationModal,
       closeRenameConversationModal,
       confirmRenameConversation,
       accessUnlocked,
@@ -1641,6 +1722,7 @@ const App = {
           </div>
           <div class="chat-header-actions">
             <span class="chat-access-badge" :class="{ locked: !accessUnlocked }">{{ accessUnlocked ? (effectiveNpcStarted ? activeProviderDisplayName + ' 已启用' : '本地资料模式') : (isPublicDemoConversation ? '公开测试 · 剩余 ' + remainingMessages + ' 次' : '只读会话') }}</span>
+            <button class="icon-button clear-conversation-button" type="button" :disabled="!currentConversationId || asking || clearingConversation" :title="accessUnlocked ? '清空本次会话' : '输入密钥后清空会话'" :aria-label="accessUnlocked ? '清空本次会话' : '输入密钥后清空会话'" @click="openClearConversationModal"><Eraser :size="17" /></button>
             <button class="icon-button" type="button" :title="darkMode ? '切换浅色主题' : '切换深色主题'" :aria-label="darkMode ? '切换浅色主题' : '切换深色主题'" @click="toggleTheme"><Sun v-if="darkMode" :size="17" /><Moon v-else :size="17" /></button>
             <button class="icon-button header-panel-toggle" type="button" :title="rightSidebarCollapsed ? '展开资料栏' : '收起资料栏'" :aria-label="rightSidebarCollapsed ? '展开资料栏' : '收起资料栏'" @click="toggleRightSidebar"><PanelRightOpen v-if="rightSidebarCollapsed" :size="17" /><PanelRightClose v-else :size="17" /></button>
           </div>
@@ -1793,6 +1875,20 @@ const App = {
           <div class="delete-modal-actions">
             <button class="delete-modal-cancel" :disabled="deleting" @click="closeDeleteModal">保留</button>
             <button class="delete-modal-confirm" :disabled="deleting" @click="confirmDelete">{{ deleting ? '正在删除…' : '确认删除' }}</button>
+          </div>
+        </section>
+      </div>
+      <div v-if="pendingClearConversation" class="delete-modal-backdrop" @click.self="closeClearConversationModal">
+        <section class="delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="clear-modal-title">
+          <header class="delete-modal-heading">
+            <div><p class="delete-modal-eyebrow">清空记录</p><h2 id="clear-modal-title">清空本次会话？</h2></div>
+            <button class="delete-modal-close" :disabled="clearingConversation" aria-label="关闭清空确认弹窗" title="保留并关闭" @click="closeClearConversationModal">×</button>
+          </header>
+          <p class="delete-modal-name">{{ pendingClearConversation.title }}</p>
+          <p class="delete-modal-copy">本次会话中的全部提问和回答将被永久删除，会话名称和知识库资料会保留；清空后将默认启用智谱 GLM。</p>
+          <div class="delete-modal-actions">
+            <button class="delete-modal-cancel" :disabled="clearingConversation" @click="closeClearConversationModal">保留记录</button>
+            <button class="delete-modal-confirm" :disabled="clearingConversation" @click="confirmClearConversation">{{ clearingConversation ? '正在清空…' : '确认清空' }}</button>
           </div>
         </section>
       </div>

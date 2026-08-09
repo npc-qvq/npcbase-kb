@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * 提供小C历史会话的新建、查询、对话、重命名和删除接口。
+ * 提供小C历史会话的新建、查询、对话、清空、重命名和删除接口。
  *
  * @author NPC
  * @date 2026-07-16 15:10:00
@@ -79,6 +79,18 @@ public class ConversationController {
     @GetMapping("/{id}/messages")
     public List<ConversationMessageView> listMessages(@PathVariable String id) {
         return conversationService.listMessages(id);
+    }
+
+    /**
+     * 清空指定会话的全部消息，但保留会话本身供后续继续使用。
+     *
+     * @param id 会话主键
+     * @return 清空后的会话摘要
+     */
+    @DeleteMapping("/{id}/messages")
+    public ConversationView clearMessages(@PathVariable String id) {
+        // 删除会话消息并重置增强回答状态，使该会话恢复为空会话。
+        return conversationService.clearMessages(id);
     }
 
     /**
