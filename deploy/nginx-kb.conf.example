@@ -1,7 +1,7 @@
 server {
     listen 80;
-    server_name kb.example.com;
-    root /opt/npcbase-kb/web/dist;
+    server_name kb.npcbase.cloud;
+    root /data/npcbase/data/kb/web/dist;
     index index.html;
 
     location /api/ {

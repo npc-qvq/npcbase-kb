@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.util.ContentCachingRequestWrapper;
@@ -106,13 +107,36 @@ public class ApiRequestResponseLoggingFilter extends OncePerRequestFilter {
     }
 
     /**
-     * 将缓存的响应体按响应字符集转换为字符串。
+     * 将缓存的响应体按响应内容类型和字符集转换为字符串。
+     * JSON 响应按照规范固定使用 UTF-8，避免 Servlet 缺省字符集导致日志乱码。
      *
      * @param responseWrapper 缓存响应体的响应包装器
      * @return 响应体字符串
      */
     private String getResponseBody(ContentCachingResponseWrapper responseWrapper) {
-        return new String(responseWrapper.getContentAsByteArray(), getCharset(responseWrapper.getCharacterEncoding()));
+        Charset charset = isJsonContentType(responseWrapper.getContentType())
+                ? StandardCharsets.UTF_8
+                : getCharset(responseWrapper.getCharacterEncoding());
+        return new String(responseWrapper.getContentAsByteArray(), charset);
+    }
+
+    /**
+     * 判断响应内容类型是否为标准 JSON 或带 JSON 后缀的媒体类型。
+     *
+     * @param contentType HTTP 响应内容类型
+     * @return 属于 JSON 媒体类型时返回 true
+     */
+    private boolean isJsonContentType(String contentType) {
+        if (contentType == null || contentType.isBlank()) {
+            return false;
+        }
+        try {
+            MediaType mediaType = MediaType.parseMediaType(contentType);
+            return MediaType.APPLICATION_JSON.isCompatibleWith(mediaType)
+                    || mediaType.getSubtype().endsWith("+json");
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     /**
