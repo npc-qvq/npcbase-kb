@@ -4,11 +4,18 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     env_file:
-      - ../backend/.env
+      - /data/npcbase/.env
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - npcbase
     ports:
       - "127.0.0.1:9527:9527"
     volumes:
-      - /opt/npcbase-kb/runtime:/data/npcbase/data/kb
+      - /data/npcbase/data/kb/runtime:/data/npcbase/data/kb
     restart: unless-stopped
+
+networks:
+  npcbase:
+    external: true
+    name: npcbase_default
